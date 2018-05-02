@@ -30,8 +30,8 @@ EPOCHS = 100
 
 DATADIR = '/u/vivianoj/data/celeba/data/'
 CUDA = torch.cuda.is_available()
-RECON = nn.BCELoss()
-RECON.size_average = False
+RECON = nn.MSELoss(size_average = False)
+#RECON = nn.BCELoss(size_average = False)
 
 LOSS = 'wae-gan' # 'vae', 'wae-gan', 'wae-mmd'
 
@@ -345,7 +345,7 @@ def calc_loss(X, recon, mu, logvar, method='vae'):
     loss_gan = None # default value, if not using wae-gan
 
     loss_recon = ae_loss(recon, X)
-    loss_recon = -loss_recon
+    #loss_recon = -loss_recon
 
     if method == 'vae':
         kld = kld_loss(mu, logvar)
