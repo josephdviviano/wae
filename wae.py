@@ -13,16 +13,17 @@ import matplotlib.gridspec as gridspec
 
 from torch.autograd import Variable
 import torch
-import torch.functional as F
+import torch.nn.functional as F
 import torch.nn as nn
 from torchvision.utils import save_image
 
 DIMS = 64  # dependent on script that generates preprocessed data
 N_CHAN = 3
-N_DATA = 100000
-N_TEST = 10000
-N_Z = 100 # mnist=8, celeba=64
-LAMBDA = 10
+N_DATA = 20000
+N_TEST = 1000
+N_Z = 64 # mnist=8, celeba=64
+LAMBDA = 1 # celeba gan = 1, celeba mdd = 100, mnist = 10
+SIGMA = 2 # celebaa = 2, mnist = 1
 
 BATCH = 50
 EPOCHS = 100
@@ -32,7 +33,8 @@ CUDA = torch.cuda.is_available()
 RECON = nn.BCELoss()
 RECON.size_average = False
 
-LOSS = 'vae'
+LOSS = 'wae-gan' # 'vae', 'wae-gan', 'wae-mmd'
+
 
 def data_celeb(n=-1):
     ''' n = 1 will load all the data '''
@@ -179,7 +181,7 @@ class VAE(nn.Module):
     def sample_pz(self):
         """ samples noise from a gaussian distribution. is it always mean=0?"""
         # is this always the same distribution??
-        noise = Variable(torch.normal(torch.zeros(BATCH, N_Z), std=1).cuda())
+        noise = Variable(torch.normal(torch.zeros(BATCH, N_Z), std=SIGMA).cuda())
         return(noise)
 
     def forward(self, x):
@@ -198,12 +200,13 @@ class Discriminator(nn.Module):
         self.hid_size = 512
 
         # 3 hidden-layer discriminator
+        # TODO: add sigmoid at end? Also, we're using 2 output nodes now...
         self.linear = nn.Sequential(
             nn.Linear(self.latent_variable_size, self.hid_size), nn.ReLU(),
             nn.Linear(self.hid_size, self.hid_size), nn.ReLU(),
             nn.Linear(self.hid_size, self.hid_size), nn.ReLU(),
             nn.Linear(self.hid_size, self.hid_size), nn.ReLU(),
-            nn.Linear(self.hid_size, 1)
+            nn.Linear(self.hid_size, 2)
         )
 
         # weight initialization
@@ -230,7 +233,7 @@ def calc_blur(X):
     lap_filter = lap_filter.reshape([1, 1, 3, 3])
 
     # valid padding (i.e., no padding)
-    conv = F.conv2d(X, lap_filter, padding=0, stride=1)
+    conv = F.conv2d(Variable(X), Variable(lap_filter), padding=0, stride=1)
 
     # smoothness is the variance of the convolved image
     var = torch.var(conv)
@@ -253,62 +256,28 @@ def kld_loss(mu, logvar):
     return(kld)
 
 
-# WAE LOSS:
-#
-#    self.penalty, self.loss_gan = self.matching_penalty()
-#    self.loss_reconstruct = self.reconstruction_loss(
-#        self.opts, self.sample_points, self.reconstructed)
-#    self.wae_objective = self.loss_reconstruct + self.wae_lambda * self.penalty
-
-
 def wae_gan_loss(z_encoded, z_sample):
     """
     https://github.com/wsnedy/WAE_Pytorch/blob/master/wae_for_mnist.py
     https://myurasov.github.io/2017/09/24/wasserstein-gan-keras.html
     """
-    d_loss_function = nn.BCEWithLogitsLoss()
+    # cross entropy loss, as discriminator has 2 outputs to distinguish real
+    # (pz) and fake (qz) samples.
+    ce = nn.CrossEntropyLoss()
 
-    logits_qz = dis(z_encoded) # is 0 when correct
-    logits_pz = dis(z_sample)  # is 1 when correct
+    logits_pz = dis(z_encoded) # is 0 when correct
+    logits_qz = dis(z_sample)  # is 1 when correct
 
     # this is used in the WAE loss function, i.e., when is pz 1?
-    loss_penalty = d_loss_function(logits_qz, torch.ones_like(logits_qz))
+    # we use [:, 1] to make our targets (ones_like or zeros_like) a single col
+    loss_penalty = ce(logits_pz, torch.ones_like(logits_pz[:, 1]).long())
 
     # this is used to train the Discriminator
-    loss_qz = d_loss_function(logits_qz, torch.zeros_like(logits_qz))
-    loss_pz = d_loss_function(logits_pz, torch.ones_like(logits_pz))
-    loss_discrim = LAMBDA * (loss_qz + loss_pz)
+    loss_pz = ce(logits_pz, torch.zeros_like(logits_pz[:, 1]).long())
+    loss_qz = ce(logits_qz, torch.ones_like(logits_qz[:, 1]).long())
+    loss_discrim = LAMBDA * (loss_pz + loss_qz)
 
-    return (loss_discrim, logits_qz, logits_pz), loss_penalty
-
-
-## ===== Inverse multiquadratic kernel MMD ============
-#
-## 2*z_dim is recommended in the original WAE paper
-#C_const = tf.cast(tf.constant(C), tf.float32)
-#
-#prior_tensor_ax0_rep = tf.tile(model.z_prior_sample[None, :, :], [batch_size, 1, 1])
-#prior_tensor_ax1_rep = tf.tile(model.z_prior_sample[:, None, :], [1, batch_size, 1])
-#q_tensor_ax0_rep = tf.tile(model.z_sample[None, :, :], [batch_size, 1, 1])
-#q_tensor_ax1_rep = tf.tile(model.z_sample[:, None, :], [1, batch_size, 1])
-#
-## prior_tensor_ax0_rep[a,b] = z_prior_sample[b]
-## prior_tensor_ax1_rep[a,b] = z_prior_sample[a]
-## prior_tensor_ax0_rep[a,b] - prior_tensor_ax1_rep[a,b] = z_prior_sample[b] - z_prior_sample[a]
-#
-#k_pp = C_const / (C_const + tf.reduce_sum((prior_tensor_ax0_rep - prior_tensor_ax1_rep) ** 2, axis=2))
-## k_pp[a, b] = C / (C + || z_prior_sample[b] - z_prior_sample[a] ||_L2^2)
-#
-#k_qq = C_const / (C_const + tf.reduce_sum((q_tensor_ax0_rep - q_tensor_ax1_rep) ** 2, axis=2))
-## k_pp[a, b] = C / (C + || z_sample[b] - z_sample[a] ||_L2^2)
-#
-#k_pq = C_const / (C_const + tf.reduce_sum((q_tensor_ax0_rep - prior_tensor_ax1_rep) ** 2, axis=2))
-## k_pq[a, b] = C / (C + || z_sample[b] - z_prior_sample[a] ||_L2^2)
-#
-#MMD_IMQ = (tf.reduce_sum(k_pp) - tf.reduce_sum(tf.diag_part(k_pp)) +
-#           tf.reduce_sum(k_qq) - tf.reduce_sum(tf.diag_part(k_qq)) -
-#           2 * (tf.reduce_sum(k_pq) - tf.reduce_sum(tf.diag_part(k_pq)))) /
-#           (batch_size_float * (batch_size_float - 1))
+    return (loss_discrim, logits_pz, logits_qz), loss_penalty
 
 
 def kernel(z_pair, sigma=1):
@@ -331,7 +300,7 @@ def wae_mmd_loss(x, y):
 
     # x = z_encoded
     # y = z_sampled
-    sigma = 1.0 # variance, hard coded at 1.0
+    SIGMA = 1.0 # variance, hard coded at 1.0
 
     norm_x = torch.sum(x**2, 1, keepdim=True)
     norm_y = torch.sum(y**2, 1, keepdim=True)
@@ -346,7 +315,7 @@ def wae_mmd_loss(x, y):
 
     # kernel: k(x, y) = C / (C + ||x - y||^2)
     # expand: xx + yy - 2xy
-    C_init = 2.0 * N_Z * (sigma ** 2)
+    C_init = 2.0 * N_Z * (SIGMA ** 2)
 
     mmd = 0.0
 
@@ -365,6 +334,47 @@ def wae_mmd_loss(x, y):
     return(mmd)
 
 
+def calc_loss(X, recon, mu, logvar, method='vae'):
+
+    try:
+        assert method in ['vae', 'wae-gan', 'wae-mmd']
+    except:
+        print('incorrect LOSS specified: {}'.format(method))
+        sys.exit(1)
+
+    loss_gan = None # default value, if not using wae-gan
+
+    if method == 'vae':
+        bce = ae_loss(recon, X)
+        kld = kld_loss(mu, logvar)
+        loss = bce + kld
+
+    elif method == 'wae-gan':
+        z_encoded = vae.encode(X)
+        z_sampled = vae.sample_pz() # always normal distribution
+
+        bce = ae_loss(recon, X)
+        loss_gan, loss_penalty = wae_gan_loss(z_encoded, z_sampled)
+
+        # loss is penalty from gan_loss (misclassification rate)
+        print('bce: {}'.format(bce))
+        print('gan: {}'.format(loss_penalty))
+        print('tot: {}'.format(LAMBDA * torch.log(loss_penalty)))
+        loss = bce - LAMBDA * torch.log(loss_penalty)
+
+    elif method == 'wae-mmd':
+        z_encoded = vae.encode(X)
+        z_sampled = vae.sample_pz() # always normal distribution
+
+        bce = ae_loss(recon, X)
+        loss_mmd = wae_mmd_loss(z_encoded, z_sample)
+
+        # loss penalty
+        loss = bce + LAMBDA * loss_mmd
+
+    return(loss, loss_gan)
+
+
 def train(epoch, data):
     vae.train()
     train_loss = 0
@@ -377,52 +387,24 @@ def train(epoch, data):
 
         recon, mu, logvar = vae.forward(X)
 
-        import IPython; IPython.embed()
+        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS)
 
-        if LOSS == 'vae':
-            bce = ae_loss(recon, X)
-            kld = kld_loss(mu, logvar)
-            loss = bce + kld
+        # optimize VAE / WAE
+        opt_vae.zero_grad()
+        loss.backward(retain_graph=True)
+        opt_vae.step()
+        train_loss += loss.data[0]
 
-        elif LOSS == 'wae-gan':
-            z_encoded = vae.encode(X)
-            z_sampled = vae.sample_pz() # currently always normal distribution...
-
-            bce = ae_loss(recon, X)
-            loss_gan, loss_penalty = wae_gan_loss(z_encoded, z_sample)
-
-            # loss penalty
-            loss = bce + LAMBDA * loss_penalty
-
-            # optimize the discriminator
+        # optimize discriminator
+        if LOSS == 'wae-gan':
             opt_dis.zero_grad()
             loss_dis = loss_gan[0]
             loss_dis.backward()
             opt_dis.step()
 
-       elif LOSS == 'wae-mmd':
-            z_encoded = vae.encode(X)
-            z_sampled = vae.sample_pz() # currently always normal distribution...
-
-            bce = ae_loss(recon, X)
-            loss_mmd = wae_mmd_loss(z_encoded, z_sample)
-
-            # loss penalty
-            loss = bce + LAMBDA * loss_mmd
-
-       else:
-            print('incorrect LOSS specified: {}'.format(LOSS))
-            sys.exit(1)
-
-        # optimize VAE / WAE
-        opt_vae.zero_grad()
-        loss.backward() # retain_graph=True?
-        opt_vae.step()
-        train_loss += loss.data[0]
-
-        #if batch % 100 == 0:
-        #    print('[ep={}/batch={}]: loss={:.4f}, kld={:.4f}'.format(
-        #        ep, batch, loss.data[0], kld.data[0]))
+        if batch % 10 == 0:
+            print('[ep={}/batch={}]: loss={:.4f}'.format(
+                ep, batch, loss.data[0]))
 
     return(train_loss / (len(data)*BATCH*N_CHAN*DIMS*DIMS))
 
@@ -436,9 +418,11 @@ def test(epoch, data):
         if CUDA:
             X = X.cuda()
         X = Variable(X)
+
         recon, mu, logvar = vae(X)
 
-        loss, bce, kld = loss_function(recon, X, mu, logvar)
+        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS)
+
         test_loss += loss.data[0]
 
         # TODO: do something with the blur
