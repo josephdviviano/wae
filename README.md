@@ -6,8 +6,11 @@ and [this one](https://github.com/bhpfelix/Variational-Autoencoder-PyTorch/blob/
 
 + `preprocess.py` -- generates preprocessed data (from `raw/`, to `data/`).
 + `wae.py` -- trains WAE model.
++ `inception.py` -- InceptionV3 model used for Frechet Inception Distance measure (FID).
++ `fid_score.py` -- Methods for calculating FID score on pairs of images.
 
 Pytorch replication of the results presented in [Tolstikhin, Bousquet, Gelly, Schoelkopf (2017)](https://arxiv.org/abs/1711.01558).
+
 
 **resources**
 
@@ -25,3 +28,6 @@ Pytorch replication of the results presented in [Tolstikhin, Bousquet, Gelly, Sc
     + nice explaination of normal VAE.
 + https://github.com/sbarratt/inception-score-pytorch
     + inception score
++ https://github.com/mseitzer/pytorch-fid
+    + frechet inception distance
+
