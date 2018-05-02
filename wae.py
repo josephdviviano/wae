@@ -241,8 +241,8 @@ def calc_blur(X):
     return(var)
 
 
-def ae_loss(recon_x, x):
-    return(RECON(recon_x, x))
+def ae_loss(recon_x, X):
+    return(RECON(recon_x, X))
 
 
 def kld_loss(mu, logvar):
@@ -344,33 +344,27 @@ def calc_loss(X, recon, mu, logvar, method='vae'):
 
     loss_gan = None # default value, if not using wae-gan
 
+    loss_recon = ae_loss(recon, X)
+    loss_recon = -loss_recon
+
     if method == 'vae':
-        bce = ae_loss(recon, X)
         kld = kld_loss(mu, logvar)
-        loss = bce + kld
+        loss = loss_recon + kld
 
     elif method == 'wae-gan':
         z_encoded = vae.encode(X)
         z_sampled = vae.sample_pz() # always normal distribution
-
-        bce = ae_loss(recon, X)
         loss_gan, loss_penalty = wae_gan_loss(z_encoded, z_sampled)
+        loss = loss_recon - LAMBDA * torch.log(loss_penalty)
 
         # loss is penalty from gan_loss (misclassification rate)
-        print('bce: {}'.format(bce))
-        print('gan: {}'.format(loss_penalty))
-        print('tot: {}'.format(LAMBDA * torch.log(loss_penalty)))
-        loss = bce - LAMBDA * torch.log(loss_penalty)
+        print('recon: {}, gan: {}'.format(loss_recon.data[0], loss_penalty.data[0]))
 
     elif method == 'wae-mmd':
         z_encoded = vae.encode(X)
         z_sampled = vae.sample_pz() # always normal distribution
-
-        bce = ae_loss(recon, X)
         loss_mmd = wae_mmd_loss(z_encoded, z_sample)
-
-        # loss penalty
-        loss = bce + LAMBDA * loss_mmd
+        loss = loss_recon + LAMBDA * loss_mmd
 
     return(loss, loss_gan)
 
