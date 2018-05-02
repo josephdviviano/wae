@@ -231,9 +231,13 @@ def calc_blur(X):
 
     lap_filter = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
     lap_filter = lap_filter.reshape([1, 1, 3, 3])
+    lap_filter = Variable(torch.from_numpy(lap_filter).float())
+
+    if CUDA:
+        lap_filter = lap_filter.cuda()
 
     # valid padding (i.e., no padding)
-    conv = F.conv2d(Variable(X), Variable(lap_filter), padding=0, stride=1)
+    conv = F.conv2d(X, lap_filter, padding=0, stride=1)
 
     # smoothness is the variance of the convolved image
     var = torch.var(conv)
@@ -358,7 +362,7 @@ def calc_loss(X, recon, mu, logvar, method='vae'):
         loss = loss_recon - LAMBDA * torch.log(loss_penalty)
 
         # loss is penalty from gan_loss (misclassification rate)
-        print('recon: {}, gan: {}'.format(loss_recon.data[0], loss_penalty.data[0]))
+        #print('recon: {}, gan: {}'.format(loss_recon.data[0], loss_penalty.data[0]))
 
     elif method == 'wae-mmd':
         z_encoded = vae.encode(X)
