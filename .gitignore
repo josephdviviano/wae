@@ -1,0 +1,7 @@
+data/*
+raw/*
+img/*
+checkpoints/*
+*.npy
+package.zip
+
