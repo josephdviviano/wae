@@ -1,9 +1,12 @@
 #!/usr/bin/env python
 
-from PIL import Image
 import numpy as np
 import os
 import torch
+
+from PIL import Image
+from mnist import * # import MNIST class
+from torch.utils.data import DataLoader, TensorDataset
 
 def data_celeb(dimentions):
     ''' n = 1 will load all the data '''
@@ -49,4 +52,39 @@ def load_data(name, n, directory, batch_size, dimentions):
     im_data = torch.utils.data.DataLoader(im_data, batch_size=batch_size, num_workers=2)
 
     return(im_data)
+
+
+def normalize(t, maxval):
+    return(t / maxval)
+
+
+def unique(tensor1d):
+    t = np.unique(tensor1d.numpy())
+    return(torch.from_numpy(t))
+
+
+def load_mnist(pct=1.0, batch_size=60):
+    """
+    Loads data, normalizes, and then sets up the training and testing sets using
+    the specified batch_size. pct can be used to select a subset of the training
+    set.
+    """
+    # load and normalize data : train=60000 / test=10000
+    data = MNIST(root='/u/vivianoj/data/mnist', download=True)
+
+    # 0-1 normalize (min/max)
+    maxval = torch.max(data.train_data.float())
+    data.train_data = normalize(data.train_data.float(), maxval)
+    data.test_data = normalize(data.test_data.float(), maxval)
+
+    # convert
+    #train_dataset = TensorDataset(data.train_data, data.train_labels)
+    #test_dataset  = TensorDataset(data.test_data,  data.test_labels)
+
+    # load
+    train_loader = DataLoader(data.train_data, batch_size=batch_size, shuffle=False, num_workers=2)
+    test_loader  = DataLoader(data.test_data,  batch_size=batch_size, shuffle=False, num_workers=2)
+
+    return(train_loader, test_loader)
+
 

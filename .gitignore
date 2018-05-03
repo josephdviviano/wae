@@ -3,5 +3,5 @@ raw/*
 img/*
 checkpoints/*
 *.npy
-package.zip
+*.zip
 

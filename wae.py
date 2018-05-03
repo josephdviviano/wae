@@ -17,30 +17,49 @@ import torch.nn.functional as F
 import torch.nn as nn
 from torchvision.utils import save_image
 
-from utils import load_data
+from utils import load_data, load_mnist
+
+DATASET = 'celeb' # 'mnist' / 'celeb'
+CHCKDIR = '/data/milatmp1/vivianoj/wae_checkpoints/'
 
 # data options
-DIMS = 64  # dependent on script that generates preprocessed data
-N_CHAN = 3
-N_DATA = 20000
-N_TEST = 1000
-BATCH = 64
-DATADIR = '/u/vivianoj/data/celeba/data/'
-CUDA = torch.cuda.is_available()
+
+if DATASET == 'celeb':
+    DIMS = 64  # dependent on script that generates preprocessed data
+    N_Z = 64             # mnist = 8, celeb = 64
+    N_CHAN = 3
+    N_DATA = 20000
+    N_TEST = 1000
+    BATCH = 64
+    SIGMA = 2            # celeba = 2, mnist = 1
+    LAMBDA = 10          # celeb gan = 1, celeb mdd = 100, mnist = 10
+    DATADIR = '/u/vivianoj/data/celeba/data/'
+    CHCKDIR = '/data/milatmp1/vivianoj/wae_checkpoints/'
+    CUDA = torch.cuda.is_available()
+
+    im_data = load_data('celeba_data.npy', N_DATA, DATADIR, BATCH, (N_CHAN, DIMS))
+    im_test = load_data('celeba_test.npy', N_TEST, DATADIR, BATCH, (N_CHAN, DIMS))
+
+elif DATASET == 'mnist':
+    DIMS = 28  # dependent on script that generates preprocessed data
+    N_Z = 8             # mnist = 8, celeb = 64
+    N_CHAN = 1
+    N_DATA = -1
+    N_TEST = -1
+    BATCH = 8
+    SIGMA = 1            # celeba = 2, mnist = 1
+    LAMBDA = 100         # celeb gan = 1, celeb mdd = 100, mnist = 10
+    DATADIR = '/u/vivianoj/data/celeba/data/'
+    CUDA = torch.cuda.is_available()
+
+    im_data, im_test = load_mnist(batch_size=BATCH)
 
 # model options
-N_Z = 64             # mnist = 8, celeb = 64
-LAMBDA = 100         # celeb gan = 1, celeb mdd = 100, mnist = 10
 SCALEBULLSHIT = 0.05
-SIGMA = 2            # celeba = 2, mnist = 1
 LR_VAE = 0.0003      # 0.0003 for wae-gan
 EPOCHS = 100
 LOSS = 'wae-mmd'     # 'vae', 'wae-gan', 'wae-mmd'
 RECON = nn.MSELoss(size_average = False) # nn.BCELoss(size_average = False)
-
-# load data
-im_data = load_data('celeba_data.npy', N_DATA, DATADIR, BATCH, (N_CHAN, DIMS))
-im_test = load_data('celeba_test.npy', N_TEST, DATADIR, BATCH, (N_CHAN, DIMS))
 
 class VAE(nn.Module):
     def __init__(self, nc, ngf, ndf, latent_variable_size):
@@ -455,9 +474,9 @@ def main():
     for ep in range(EPOCHS):
         train_loss = train(ep, im_data)
         test_loss  = test(ep,  im_test)
-        torch.save(vae.state_dict(),
-            'checkpoints/{}_ep_{}_train_loss_{:.4f}_test_loss_{:.4f}.pth'.format(
-            LOSS, ep, train_loss, test_loss))
+        torch.save(vae.state_dict(), os.path.join(CHCKDIR,
+            '{}_ep_{}_train_loss_{:.4f}_test_loss_{:.4f}.pth'.format(
+            LOSS, ep, train_loss, test_loss)))
 
 if __name__ == '__main__':
     main()
