@@ -30,12 +30,12 @@ CUDA = torch.cuda.is_available()
 
 # model options
 N_Z = 64             # mnist = 8, celeb = 64
-LAMBDA = 10          # celeb gan = 1, celeb mdd = 100, mnist = 10
+LAMBDA = 100         # celeb gan = 1, celeb mdd = 100, mnist = 10
 SCALEBULLSHIT = 0.05
 SIGMA = 2            # celeba = 2, mnist = 1
 LR_VAE = 0.0003      # 0.0003 for wae-gan
 EPOCHS = 100
-LOSS = 'wae-gan'     # 'vae', 'wae-gan', 'wae-mmd'
+LOSS = 'wae-mmd'     # 'vae', 'wae-gan', 'wae-mmd'
 RECON = nn.MSELoss(size_average = False) # nn.BCELoss(size_average = False)
 
 # load data
@@ -101,7 +101,8 @@ class VAE(nn.Module):
 
     def reparametrize(self, mu, logvar):
         """ generates a normal distribution with the specified mean and std"""
-        std = logvar.mul(0.5).exp_() # converts log(var) to std
+        std = logvar.mul(0.5).exp_()    # converts log(var) to std
+        std = torch.clamp(std, -50, 50) # prevents z_encoded from becoming huge
 
         # z is a gaussian with std and mean=mu. begin with eps (a stock gauss)
         if CUDA:
@@ -139,10 +140,10 @@ class VAE(nn.Module):
         """ feeds z through decoder """
         return(self.decoder(z))
 
-    def sample_pz(self):
+    def sample_pz(self, n):
         """ samples noise from a gaussian distribution. is it always mean=0?"""
         # is this always the same distribution??
-        noise = Variable(torch.normal(torch.zeros(BATCH, N_Z), std=SIGMA).cuda())
+        noise = Variable(torch.normal(torch.zeros(n, N_Z), std=SIGMA).cuda())
         return(noise)
 
     def forward(self, x):
@@ -275,7 +276,6 @@ def wae_mmd_loss(x, y):
     https://github.com/schelotto/Wasserstein_Autoencoders/blob/master/wae_mmd.py
     https://github.com/paruby/Wasserstein-Auto-Encoders/blob/master/models.py -- line 383
     """
-    print('z_encoded max: {}'.format(torch.max(x).data[0]))
 
     # x = z_encoded # y = z_sampled
     norm_x = torch.sum(x**2, 1, keepdim=True)
@@ -299,22 +299,30 @@ def wae_mmd_loss(x, y):
         C = C_init * scale
 
         res_xx = (C / (C + dist_xx + 1e-8))
-        res_xx = torch.mul(res_xx, Variable(1.0-torch.eye(BATCH).cuda())) # 0 diag
-        res_xx = 1.0 * torch.sum(res_xx) / (BATCH*(BATCH-1))     # diagonal not included
+        dims = res_xx.size(0)
+        # NB: in original code he does NOT use the abs ... is it a bug?
+        #     otherwise it will make the entire matrix negative while 0-ing diag
+        mask = Variable(torch.abs(1.0-torch.eye(dims)).cuda())
+        res_xx = torch.mul(res_xx, mask)
+        res_xx = 1.0 * torch.sum(res_xx) / (BATCH*(BATCH-1))     # no diag
 
         res_yy = (C / (C + dist_yy + 1e-8))
-        res_yy = torch.mul(res_yy, Variable(1.0-torch.eye(BATCH).cuda())) # 0 diag
-        res_yy = 1.0 * torch.sum(res_yy) / (BATCH*(BATCH-1))     # diagonal not included
+        dims = res_yy.size(0)
+        # NB: in original code he does NOT use the abs ... is it a bug?
+        #     otherwise it will make the entire matrix negative while 0-ing diag
+        mask = Variable(torch.abs(1.0-torch.eye(dims)).cuda())
+        res_yy = torch.mul(res_yy, mask)
+        res_yy = 1.0 * torch.sum(res_yy) / (BATCH*(BATCH-1))     # no diag
 
         res_xy = C / (C + dist_xy + 1e-8)
-        res_xy = 2.0 * torch.sum(res_xy) / BATCH**2 # keep diagonal
+        res_xy = 2.0 * torch.sum(res_xy) / BATCH**2              # keep diag
 
         mmd += (res_xx + res_yy - res_xy)
 
     return(mmd)
 
 
-def calc_loss(X, recon, mu, logvar, method='vae'):
+def calc_loss(X, recon, mu, logvar, method='vae', verbose=False):
     """
     key observation: do we SUBTRACT or ADD LAMBDA*PENALTY/MMD?
     in the paper he always adds LAMBDA*PENALTY/MMD...
@@ -334,34 +342,45 @@ def calc_loss(X, recon, mu, logvar, method='vae'):
     if method == 'vae':
         kld = kld_loss(mu, logvar)
         loss = loss_recon + kld
-        print('recon: {}, kld: {}'.format(loss_recon.data[0], kld.data[0]))
+
+        if verbose:
+            print('recon: {}, kld: {}'.format(loss_recon.data[0], kld.data[0]))
 
     elif method == 'wae-gan':
         z_encoded = vae.encode(X)
-        z_sampled = vae.sample_pz() # always normal distribution
+        z_sampled = vae.sample_pz(X.size(0)) # always normal distribution
         loss_gan, loss_penalty = wae_gan_loss(z_encoded, z_sampled)
 
         # normalize loss for discriminator by LAMBDA/BATCH
         loss_recon = loss_recon * SCALEBULLSHIT
         loss_gan = LAMBDA * loss_gan[0] / BATCH
-        loss = loss_recon + (LAMBDA * loss_penalty) # NB: RECON - LAMBDA*PENALTY
+        loss = loss_recon + (LAMBDA * loss_penalty) # NB: RECON + LAMBDA*PENALTY
 
-        # loss is penalty from gan_loss (misclassification rate)
-        print('recon: {}, penalty: {}, disc: {}'.format(
-            loss_recon.data[0], loss_penalty.data[0], loss_gan.data[0]))
+        # loss_penalty is the misclassification rate os z_encoded by discrim
+        if verbose:
+            print('z_encoded {} : {} : {}'.format(
+                torch.min(z_encoded).data[0],
+                torch.mean(z_encoded).data[0],
+                torch.max(z_encoded).data[0]))
+            print('recon: {}, penalty: {}, disc: {}'.format(
+                loss_recon.data[0], loss_penalty.data[0], loss_gan.data[0]))
 
     elif method == 'wae-mmd':
         # DOES BATCH SIZE NEED TO MATCH LATENT SPACE SIZE??
         z_encoded = vae.encode(X)
-        z_sampled = vae.sample_pz() # always normal distribution
+        z_sampled = vae.sample_pz(X.size(0)) # always normal distribution
         loss_mmd = wae_mmd_loss(z_encoded, z_sampled)
 
         # loss_mmd is already normalized by BATCH**2, see wae_mmd_loss
         loss_recon = loss_recon * SCALEBULLSHIT
         loss = loss_recon + (LAMBDA * loss_mmd) # NB: RECON - LAMBDA*MMD
 
-        # loss is recon * loss_mmd (misclassification rate)
-        print('recon: {}, mmd: {}'.format(loss_recon.data[0], loss_mmd.data[0]))
+        if verbose:
+            print('z_encoded {} : {} : {}'.format(
+                torch.min(z_encoded).data[0],
+                torch.mean(z_encoded).data[0],
+                torch.max(z_encoded).data[0]))
+            print('recon: {}, mmd: {}'.format(loss_recon.data[0], loss_mmd.data[0]))
 
     return(loss, loss_gan)
 
@@ -381,7 +400,7 @@ def train(ep, data):
         # with MDD, standard deviation blows up to produce NaNs without very small
         # learning rates
         #print('mu={}, logvar={}'.format(torch.max(mu).data[0], torch.max(logvar).data[0]))
-        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS)
+        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS, verbose=True)
 
         # optimize VAE / WAE
         opt_vae.zero_grad()
@@ -394,6 +413,9 @@ def train(ep, data):
             opt_dis.zero_grad()
             loss_dis = loss_gan[0]
             loss_dis.backward()
+            opt_dis.step()
+        else:
+            opt_dis.zero_grad()
             opt_dis.step()
 
         if batch % 100 == 0:
@@ -414,9 +436,7 @@ def test(ep, data):
         X = Variable(X)
 
         recon, mu, logvar = vae(X)
-
-        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS)
-
+        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS, verbose=True)
         test_loss += loss.data[0]
 
         # TODO: do something with the blur
@@ -428,6 +448,7 @@ def test(ep, data):
     print('[{}] test loss: {:.4f}'.format(ep, test_loss))
 
     return(test_loss)
+
 
 def main():
 
