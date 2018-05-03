@@ -22,7 +22,7 @@ from utils import load_data, load_mnist
 CHCKDIR = '/data/milatmp1/vivianoj/wae_checkpoints/'
 CUDA = torch.cuda.is_available()
 
-DATASET = 'celeb' # 'mnist' / 'celeb'
+DATASET = 'mnist' # 'mnist' / 'celeb'
 LOSS = 'wae-mmd'     # 'vae', 'wae-gan', 'wae-mmd'
 
 # data options
@@ -66,16 +66,14 @@ elif DATASET == 'mnist':
     SIGMA = 1            # celeba = 2, mnist = 1
     LAMBDA = 10          # celeb gan = 1, celeb mdd = 100, mnist = 10
     LR_VAE = 0.003
+    RECON =  nn.BCELoss(size_average = False)
 
     if LOSS == 'wae-mmd':
         LR_DIS = None
-        RECON = nn.MSELoss(size_average = False)
     elif LOSS == 'wae-gan':
         LR_DIS = 0.0005
-        RECON = nn.MSELoss(size_average = False)
     elif LOSS == 'vae':
         LR_DIS = None
-        RECON =  nn.BCELoss(size_average = False)
 
     DATADIR = '/u/vivianoj/data/celeba/data/'
     CUDA = torch.cuda.is_available()
@@ -94,48 +92,66 @@ class VAE(nn.Module):
         self.ngf = ngf
         self.ndf = ndf
         self.latent_variable_size = latent_variable_size
+        self.relu = nn.LeakyReLU(0.2)
+
+        if DATASET == 'celeb':
+            self.conv_filt = 5
+            self.size = 4
+        elif DATASET == 'mnist':
+            self.conv_filt = 4
+            self.size = 3
 
         # encoder
-        # TODO: redo using nn.Sequentials (1 per layer)
-        self.e1 = nn.Conv2d(nc, ndf, 5, 2, 2)
-        self.bn1 = nn.BatchNorm2d(ndf)
+        self.e1 = nn.Sequential(nn.Conv2d(nc, ndf, self.conv_filt, 2, 2),
+            nn.BatchNorm2d(ndf), self.relu)
 
-        self.e2 = nn.Conv2d(ndf, ndf*2, 5, 2, 2)
-        self.bn2 = nn.BatchNorm2d(ndf*2)
+        self.e2 = nn.Sequential(nn.Conv2d(ndf, ndf*2, self.conv_filt, 2, 2),
+            nn.BatchNorm2d(ndf*2), self.relu)
 
-        self.e3 = nn.Conv2d(ndf*2, ndf*4, 5, 2, 2)
-        self.bn3 = nn.BatchNorm2d(ndf*4)
+        self.e3 = nn.Sequential(nn.Conv2d(ndf*2, ndf*4, self.conv_filt, 2, 2),
+            nn.BatchNorm2d(ndf*4), self.relu)
 
-        self.e4 = nn.Conv2d(ndf*4, ndf*8, 5, 2, 2)
-        self.bn4 = nn.BatchNorm2d(ndf*8)
+        self.e4 = nn.Sequential(nn.Conv2d(ndf*4, ndf*8, self.conv_filt, 2, 2),
+            nn.BatchNorm2d(ndf*8), self.relu)
 
-        self.fc1 = nn.Linear(ndf*8*4*4, latent_variable_size)
-        self.fc2 = nn.Linear(ndf*8*4*4, latent_variable_size)
+        self.fc1 = nn.Linear(ndf*8*self.size*self.size, latent_variable_size)
+        self.fc2 = nn.Linear(ndf*8*self.size*self.size, latent_variable_size)
 
         # decoder
-        self.d1 = nn.Linear(latent_variable_size, ngf*8*4*4)
+        self.d1 = nn.Linear(latent_variable_size, ngf*8*self.size*self.size)
 
-        self.d2 = nn.ConvTranspose2d(ngf*8, ngf*4, 4, 2, 1)
-        self.bn6 = nn.BatchNorm2d(ngf*4, 1.e-3)
+        self.d2 = nn.Sequential(nn.ConvTranspose2d(ngf*8, ngf*4, self.conv_filt-1, 2, 1),
+            nn.BatchNorm2d(ngf*4, 1.e-3), self.relu)
 
-        self.d3 = nn.ConvTranspose2d(ngf*4, ngf*2, 4, 2, 1)
-        self.bn7 = nn.BatchNorm2d(ngf*2, 1.e-3)
+        if DATASET == 'celeb':
 
-        self.d4 = nn.ConvTranspose2d(ngf*2, ngf, 4, 2, 1)
-        self.bn8 = nn.BatchNorm2d(ngf, 1.e-3)
+            self.d3 = nn.Sequential(nn.ConvTranspose2d(ngf*4, ngf*2, self.conv_filt-1, 2, 1),
+                nn.BatchNorm2d(ngf*2, 1.e-3), self.relu)
 
-        self.d5 = nn.ConvTranspose2d(ngf, nc, 4, 2, 1)
+            self.d4 = nn.Sequential(nn.ConvTranspose2d(ngf*2, ngf, self.conv_filt-1, 2, 1),
+                nn.BatchNorm2d(ngf, 1.e-3), self.relu)
 
-        self.relu = nn.LeakyReLU(0.2)
-        self.sigmoid = nn.Sigmoid()
+            self.d5 = nn.Sequential(nn.ConvTranspose2d(ngf, nc, self.conv_filt-1, 2, 1),
+                nn.Sigmoid())
+
+        elif DATASET == 'mnist':
+            self.d3 = nn.Sequential(nn.ConvTranspose2d(ngf*4, ngf*2, self.conv_filt-2, 2, 1),
+                nn.BatchNorm2d(ngf*2, 1.e-3), self.relu)
+
+            self.d4 = nn.Sequential(nn.ConvTranspose2d(ngf*2, ngf, self.conv_filt-1, 2, 1),
+                nn.BatchNorm2d(ngf, 1.e-3), self.relu)
+
+            self.d5 = nn.Sequential(nn.ConvTranspose2d(ngf, nc, self.conv_filt-2, 2, 1),
+                nn.Sigmoid())
+
 
     def encoder(self, x):
         """ encoder architecture: note 2 read-out heads for mu and logvar """
-        h1 = self.relu(self.bn1(self.e1(x)))
-        h2 = self.relu(self.bn2(self.e2(h1)))
-        h3 = self.relu(self.bn3(self.e3(h2)))
-        h4 = self.relu(self.bn4(self.e4(h3)))
-        h4 = h4.view(-1, self.ndf*8*4*4)
+        h1 = self.e1(x)
+        h2 = self.e2(h1)
+        h3 = self.e3(h2)
+        h4 = self.e4(h3)
+        h4 = h4.view(-1, self.ndf*8*self.size*self.size)
         #print(h1.size())
         #print(h2.size())
         #print(h3.size())
@@ -146,9 +162,12 @@ class VAE(nn.Module):
     def reparametrize(self, mu, logvar):
         """ generates a normal distribution with the specified mean and std"""
         std = logvar.mul(0.5).exp_()    # converts log(var) to std
-        std = torch.clamp(std, -25, 25) # prevents z_encoded from becoming huge
 
-        print('mu={}, std={}'.format(mu.data[0], std.data[0]))
+        # with MDD, standard deviation blows up to produce NaNs without tiny
+        # learning rates, so clamp std to prevent z_encoded from naning out
+        std = torch.clamp(std, -50, 50)
+
+        #print('mu={}, std={}'.format(torch.max(mu).data[0], torch.max(std).data[0]))
 
         # z is a gaussian with std and mean=mu. begin with eps (a stock gauss)
         if CUDA:
@@ -162,19 +181,20 @@ class VAE(nn.Module):
 
     def decoder(self, z):
         """ decoder architecture """
-        h1 = self.relu(self.d1(z))
-        h1 = h1.view(-1, self.ngf*8, 4, 4)
-        h2 = self.relu(self.bn6(self.d2(h1)))
-        h3 = self.relu(self.bn7(self.d3(h2)))
-        h4 = self.relu(self.bn8(self.d4(h3)))
-        out = self.sigmoid(self.d5(h4))
+        h1 = self.d1(z)
+        h1 = h1.view(-1, self.ngf*8, self.size, self.size)
+        h2 = self.d2(h1)
+        h3 = self.d3(h2)
+        h4 = self.d4(h3)
+        h5 = self.d5(h4)
+        #print(z.size())
         #print(h1.size())
         #print(h2.size())
         #print(h3.size())
         #print(h4.size())
-        #print(out.size())
+        #print(h5.size())
 
-        return(out)
+        return(self.d5(h4))
 
     def encode(self, x):
         """ feeds data through encoder and reparameterization to produce z """
@@ -187,10 +207,11 @@ class VAE(nn.Module):
         return(self.decoder(z))
 
     def sample_pz(self, n):
-        """ samples noise from a gaussian distribution. is it always mean=0?"""
-        # is this always the same distribution??
-        noise = Variable(torch.normal(torch.zeros(n, N_Z), std=SIGMA).cuda())
-        return(noise)
+        """
+        samples noise from a gaussian distribution with mean=0 and experiment-
+        specific standard-deviation (SIGMA)
+        """
+        return(Variable(torch.normal(torch.zeros(n, N_Z), std=SIGMA).cuda()))
 
     def forward(self, x):
         """ passes data through encode, reparameterization, and decode """
@@ -444,12 +465,13 @@ def train(ep, data):
             X = X.cuda()
         X = Variable(X)
 
+        # inserts single channel dimensions for black and white images
+        if DATASET == 'mnist':
+            X = X.unsqueeze(1)
+
         recon, mu, logvar = vae.forward(X)
 
-        # with MDD, standard deviation blows up to produce NaNs without very small
-        # learning rates
-        #print('mu={}, logvar={}'.format(torch.max(mu).data[0], torch.max(logvar).data[0]))
-        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS, verbose=True)
+        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS)
 
         # optimize VAE / WAE
         opt_vae.zero_grad()
@@ -491,6 +513,7 @@ def test(ep, data):
         # TODO: do something with the blur
         blur = calc_blur(recon)
 
+        import IPython; IPython.embed()
         save_image(X.data, 'img/{}_ep_{}_data.jpg'.format(LOSS, ep), nrow=8, padding=2)
         save_image(recon.data, 'img/{}_ep_{}_recon.jpg'.format(LOSS, ep), nrow=8, padding=2)
 
