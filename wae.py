@@ -19,11 +19,13 @@ from torchvision.utils import save_image
 
 from utils import load_data, load_mnist
 
-DATASET = 'celeb' # 'mnist' / 'celeb'
 CHCKDIR = '/data/milatmp1/vivianoj/wae_checkpoints/'
+CUDA = torch.cuda.is_available()
+
+DATASET = 'celeb' # 'mnist' / 'celeb'
+LOSS = 'wae-mmd'     # 'vae', 'wae-gan', 'wae-mmd'
 
 # data options
-
 if DATASET == 'celeb':
     DIMS = 64  # dependent on script that generates preprocessed data
     N_Z = 64             # mnist = 8, celeb = 64
@@ -31,11 +33,25 @@ if DATASET == 'celeb':
     N_DATA = 20000
     N_TEST = 1000
     BATCH = 64
-    SIGMA = 2            # celeba = 2, mnist = 1
-    LAMBDA = 10          # celeb gan = 1, celeb mdd = 100, mnist = 10
+    SIGMA = 2             # celeba = 2, mnist = 1
+
+    if LOSS == 'wae-mmd':
+        LAMBDA = 100          # celeb gan = 1, celeb mdd = 100, mnist = 10
+        LR_VAE = 0.001
+        LR_DIS = None
+        RECON = nn.MSELoss(size_average = False)
+    elif LOSS == 'wae-gan':
+        LAMBDA = 1
+        LR_VAE = 0.0003      # 0.0003 for wae-gan
+        LR_DIS = 0.001
+        RECON = nn.MSELoss(size_average = False)
+    elif LOSS == 'vae':
+        LAMBDA = None
+        LR_VAE = 0.0001      # 0.0003 for wae-gan
+        LR_DIS = None
+        RECON =  nn.BCELoss(size_average = False)
+
     DATADIR = '/u/vivianoj/data/celeba/data/'
-    CHCKDIR = '/data/milatmp1/vivianoj/wae_checkpoints/'
-    CUDA = torch.cuda.is_available()
 
     im_data = load_data('celeba_data.npy', N_DATA, DATADIR, BATCH, (N_CHAN, DIMS))
     im_test = load_data('celeba_test.npy', N_TEST, DATADIR, BATCH, (N_CHAN, DIMS))
@@ -48,7 +64,19 @@ elif DATASET == 'mnist':
     N_TEST = -1
     BATCH = 8
     SIGMA = 1            # celeba = 2, mnist = 1
-    LAMBDA = 100         # celeb gan = 1, celeb mdd = 100, mnist = 10
+    LAMBDA = 10          # celeb gan = 1, celeb mdd = 100, mnist = 10
+    LR_VAE = 0.003
+
+    if LOSS == 'wae-mmd':
+        LR_DIS = None
+        RECON = nn.MSELoss(size_average = False)
+    elif LOSS == 'wae-gan':
+        LR_DIS = 0.0005
+        RECON = nn.MSELoss(size_average = False)
+    elif LOSS == 'vae':
+        LR_DIS = None
+        RECON =  nn.BCELoss(size_average = False)
+
     DATADIR = '/u/vivianoj/data/celeba/data/'
     CUDA = torch.cuda.is_available()
 
@@ -56,10 +84,7 @@ elif DATASET == 'mnist':
 
 # model options
 SCALEBULLSHIT = 0.05
-LR_VAE = 0.0003      # 0.0003 for wae-gan
 EPOCHS = 100
-LOSS = 'wae-mmd'     # 'vae', 'wae-gan', 'wae-mmd'
-RECON = nn.MSELoss(size_average = False) # nn.BCELoss(size_average = False)
 
 class VAE(nn.Module):
     def __init__(self, nc, ngf, ndf, latent_variable_size):
@@ -121,7 +146,9 @@ class VAE(nn.Module):
     def reparametrize(self, mu, logvar):
         """ generates a normal distribution with the specified mean and std"""
         std = logvar.mul(0.5).exp_()    # converts log(var) to std
-        std = torch.clamp(std, -50, 50) # prevents z_encoded from becoming huge
+        std = torch.clamp(std, -25, 25) # prevents z_encoded from becoming huge
+
+        print('mu={}, std={}'.format(mu.data[0], std.data[0]))
 
         # z is a gaussian with std and mean=mu. begin with eps (a stock gauss)
         if CUDA:
@@ -279,6 +306,10 @@ def wae_gan_loss(z_encoded, z_sample):
     return (loss_discrim, logits_pz, logits_qz), loss_penalty
 
 
+def isnan(x):
+    return(x != x)
+
+
 def wae_mmd_loss(x, y):
     """
     inverse multiquadratic kernel for MMD
@@ -286,14 +317,9 @@ def wae_mmd_loss(x, y):
     C = 2.0 * N_Z * (sigma ** 2)
     return(C / (C + torch.mean(z_pair[0] - z_pair[1]) ** 2))
 
-    useful:
     https://github.com/tolstikhin/wae/blob/master/wae.py -- line 226
     https://discuss.pytorch.org/t/maximum-mean-discrepancy-mmd-and-radial-basis-function-rbf/1875
     https://ermongroup.github.io/blog/a-tutorial-on-mmd-variational-autoencoders/
-
-    maybe:
-    https://github.com/schelotto/Wasserstein_Autoencoders/blob/master/wae_mmd.py
-    https://github.com/paruby/Wasserstein-Auto-Encoders/blob/master/models.py -- line 383
     """
 
     # x = z_encoded # y = z_sampled
@@ -337,6 +363,10 @@ def wae_mmd_loss(x, y):
         res_xy = 2.0 * torch.sum(res_xy) / BATCH**2              # keep diag
 
         mmd += (res_xx + res_yy - res_xy)
+
+
+    if isnan(mmd.data[0]):
+        import IPython; IPython.embed()
 
     return(mmd)
 
