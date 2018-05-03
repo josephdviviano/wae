@@ -22,7 +22,8 @@ N_CHAN = 3
 N_DATA = 20000
 N_TEST = 1000
 N_Z = 64 # mnist=8, celeba=64
-LAMBDA = 1 # celeba gan = 1, celeba mdd = 100, mnist = 10
+LAMBDA = 100 # celeba gan = 1, celeba mdd = 100, mnist = 10
+SCALEBULLSHIT = 0.05
 SIGMA = 2 # celebaa = 2, mnist = 1
 
 BATCH = 50
@@ -33,7 +34,7 @@ CUDA = torch.cuda.is_available()
 RECON = nn.MSELoss(size_average = False)
 #RECON = nn.BCELoss(size_average = False)
 
-LOSS = 'wae-gan' # 'vae', 'wae-gan', 'wae-mmd'
+LOSS = 'wae-mmd' # 'vae', 'wae-gan', 'wae-mmd'
 
 
 def data_celeb(n=-1):
@@ -284,14 +285,13 @@ def wae_gan_loss(z_encoded, z_sample):
     return (loss_discrim, logits_pz, logits_qz), loss_penalty
 
 
-def kernel(z_pair, sigma=1):
-    """ inverse multiquadratic kernel for MMD """
+def wae_mmd_loss(x, y):
+    """
+    inverse multiquadratic kernel for MMD
+
     C = 2.0 * N_Z * (sigma ** 2)
     return(C / (C + torch.mean(z_pair[0] - z_pair[1]) ** 2))
 
-
-def wae_mmd_loss(x, y):
-    """
     useful:
     https://github.com/tolstikhin/wae/blob/master/wae.py -- line 226
     https://discuss.pytorch.org/t/maximum-mean-discrepancy-mmd-and-radial-basis-function-rbf/1875
@@ -301,10 +301,12 @@ def wae_mmd_loss(x, y):
     https://github.com/schelotto/Wasserstein_Autoencoders/blob/master/wae_mmd.py
     https://github.com/paruby/Wasserstein-Auto-Encoders/blob/master/models.py -- line 383
     """
+    #print('-')
+    #print('z_encoded: {} : {} : {}'.format(torch.min(x.data[0]), torch.mean(x.data[0]), torch.max(x.data[0])))
+    #print('z_sampled: {} : {} : {}'.format(torch.min(y.data[0]), torch.mean(y.data[0]), torch.max(y.data[0])))
 
     # x = z_encoded
     # y = z_sampled
-    SIGMA = 1.0 # variance, hard coded at 1.0
 
     norm_x = torch.sum(x**2, 1, keepdim=True)
     norm_y = torch.sum(y**2, 1, keepdim=True)
@@ -326,14 +328,18 @@ def wae_mmd_loss(x, y):
     for scale in [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]:
         C = C_init * scale
 
-        res1 = (C / (C + dist_xx)) + (C / (C + dist_yy))
-        res1 = torch.mul(res1, Variable(1.0-torch.eye(BATCH).cuda())) # 0 diag
-        res1 = 1.0 * torch.sum(res1) / (BATCH*(BATCH-1)) # diagonal not included
+        res_xx = (C / (C + dist_xx + 1e-8))
+        res_xx = torch.mul(res_xx, Variable(1.0-torch.eye(BATCH).cuda())) # 0 diag
+        res_xx = 1.0 * LAMBDA * torch.sum(res_xx) / (BATCH*(BATCH-1))     # diagonal not included
 
-        res2 = C / (C + dist_xy)
-        res2 = 2.0 * torch.sum(res2) / BATCH**2 # keep diagonal for this term
+        res_yy = (C / (C + dist_yy + 1e-8))
+        res_yy = torch.mul(res_yy, Variable(1.0-torch.eye(BATCH).cuda())) # 0 diag
+        res_yy = 1.0 * LAMBDA * torch.sum(res_yy) / (BATCH*(BATCH-1))     # diagonal not included
 
-        mmd += res1 - res2
+        res_xy = C / (C + dist_xy + 1e-8)
+        res_xy = 2.0 * LAMBDA * torch.sum(res_xy) / BATCH**2 # keep diagonal
+
+        mmd += (res_xx + res_yy - res_xy)
 
     return(mmd)
 
@@ -349,26 +355,41 @@ def calc_loss(X, recon, mu, logvar, method='vae'):
     loss_gan = None # default value, if not using wae-gan
 
     loss_recon = ae_loss(recon, X)
-    #loss_recon = -loss_recon
+    loss_recon = loss_recon / BATCH # normalize loss_recon by BATCH
 
     if method == 'vae':
         kld = kld_loss(mu, logvar)
         loss = loss_recon + kld
+        print('recon: {}, kld: {}'.format(loss_recon.data[0], kld.data[0]))
 
     elif method == 'wae-gan':
         z_encoded = vae.encode(X)
         z_sampled = vae.sample_pz() # always normal distribution
         loss_gan, loss_penalty = wae_gan_loss(z_encoded, z_sampled)
-        loss = loss_recon - LAMBDA * torch.log(loss_penalty)
+
+        # normalize loss for discriminator by LAMBDA/BATCH
+        loss_recon = loss_recon * SCALEBULLSHIT
+        loss_gan = LAMBDA * loss_gan[0] / BATCH
+        loss = loss_recon - LAMBDA * loss_penalty
 
         # loss is penalty from gan_loss (misclassification rate)
-        #print('recon: {}, gan: {}'.format(loss_recon.data[0], loss_penalty.data[0]))
+        print('max_enc: {}'.format(torch.max(z_encoded).data[0]))
+        print('recon: {}, penalty: {}, disc: {}'.format(
+            loss_recon.data[0], loss_penalty.data[0], loss_gan.data[0]))
 
     elif method == 'wae-mmd':
+        # DOES BATCH SIZE NEED TO MATCH LATENT SPACE SIZE??
         z_encoded = vae.encode(X)
         z_sampled = vae.sample_pz() # always normal distribution
-        loss_mmd = wae_mmd_loss(z_encoded, z_sample)
-        loss = loss_recon + LAMBDA * loss_mmd
+        loss_mmd = wae_mmd_loss(z_encoded, z_sampled)
+
+        # loss_mmd is already normalized by BATCH**2, see wae_mmd_loss
+        loss_recon = loss_recon * SCALEBULLSHIT
+        loss = loss_recon + (LAMBDA * loss_mmd)
+
+        # loss is recon * loss_mmd (misclassification rate)
+        print('max_enc: {}'.format(torch.max(z_encoded).data[0]))
+        print('recon: {}, mmd: {}'.format(loss_recon.data[0], loss_mmd.data[0]))
 
     return(loss, loss_gan)
 
@@ -400,11 +421,11 @@ def train(epoch, data):
             loss_dis.backward()
             opt_dis.step()
 
-        if batch % 10 == 0:
+        if batch % 100 == 0:
             print('[ep={}/batch={}]: loss={:.4f}'.format(
                 ep, batch, loss.data[0]))
 
-    return(train_loss / (len(data)*BATCH*N_CHAN*DIMS*DIMS))
+    return(train_loss)
 
 
 def test(epoch, data):
@@ -426,10 +447,9 @@ def test(epoch, data):
         # TODO: do something with the blur
         blur = calc_blur(recon)
 
-        save_image(X.data, 'img/epoch_{}_data.jpg'.format(epoch), nrow=8, padding=2)
-        save_image(recon.data, 'img/epoch_{}_recon.jpg'.format(epoch), nrow=8, padding=2)
+        save_image(X.data, 'img/{}_ep_{}_data.jpg'.format(LOSS, epoch), nrow=8, padding=2)
+        save_image(recon.data, 'img/{}_ep_{}_recon.jpg'.format(LOSS, epoch), nrow=8, padding=2)
 
-    test_loss /= (len(data)*BATCH*N_CHAN*DIMS*DIMS)
     print('[{}] test loss: {:.4f}'.format(epoch, test_loss))
 
     return(test_loss)
@@ -451,6 +471,6 @@ opt_dis = torch.optim.Adam(dis.parameters(), lr=0.0005, betas=(0.5, 0.999))
 for ep in range(EPOCHS):
     train_loss = train(ep, im_data)
     test_loss = test(ep, im_test)
-    torch.save(vae.state_dict(), 'checkpoints/ep_{}_train_loss_{:.4f}_test_loss_{:.4f}.pth'.format(
-        ep, train_loss, test_loss))
+    torch.save(vae.state_dict(), 'checkpoints/{}_ep_{}_train_loss_{:.4f}_test_loss_{:.4f}.pth'.format(
+        LOSS, ep, train_loss, test_loss))
 
