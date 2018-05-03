@@ -1,10 +1,10 @@
 #!/usr/bin/env python
+
 import os
 import sys
 import scandir
 import time
 
-from PIL import Image
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -17,70 +17,30 @@ import torch.nn.functional as F
 import torch.nn as nn
 from torchvision.utils import save_image
 
+from utils import load_data
+
+# data options
 DIMS = 64  # dependent on script that generates preprocessed data
 N_CHAN = 3
 N_DATA = 20000
 N_TEST = 1000
-N_Z = 64 # mnist=8, celeba=64
-LAMBDA = 100 # celeba gan = 1, celeba mdd = 100, mnist = 10
-SCALEBULLSHIT = 0.05
-SIGMA = 2 # celebaa = 2, mnist = 1
-
-BATCH = 50
-EPOCHS = 100
-
+BATCH = 64
 DATADIR = '/u/vivianoj/data/celeba/data/'
 CUDA = torch.cuda.is_available()
-RECON = nn.MSELoss(size_average = False)
-#RECON = nn.BCELoss(size_average = False)
 
-LOSS = 'wae-mmd' # 'vae', 'wae-gan', 'wae-mmd'
+# model options
+N_Z = 64             # mnist = 8, celeb = 64
+LAMBDA = 10          # celeb gan = 1, celeb mdd = 100, mnist = 10
+SCALEBULLSHIT = 0.05
+SIGMA = 2            # celeba = 2, mnist = 1
+LR_VAE = 0.0003      # 0.0003 for wae-gan
+EPOCHS = 100
+LOSS = 'wae-gan'     # 'vae', 'wae-gan', 'wae-mmd'
+RECON = nn.MSELoss(size_average = False) # nn.BCELoss(size_average = False)
 
-
-def data_celeb(n=-1):
-    ''' n = 1 will load all the data '''
-    im_data = []
-
-    if n == -1:
-        files = os.listdir(DATADIR)
-    else:
-        files = os.listdir(DATADIR)[:n]
-
-    for i, f in enumerate(files):
-        if i % 1000 == 0:
-            print('loaded {}/{}'.format(i, n))
-
-        im = Image.open(os.path.join(DATADIR, f))
-        im = np.asarray(im.convert('RGB').getdata()).astype(np.float)
-        mins = np.min(im)
-        maxs = np.max(im)
-        im = (im - mins)/(maxs - mins)*2 - 1
-
-        # reshape image
-        im = im.transpose((1,0))
-        im = im.reshape(N_CHAN, DIMS, DIMS)
-
-        im_data.append(im)
-
-    return(im_data)
-
-
-def load_data(name, n):
-    """
-    im_data is a list of n x 4096 x 3
-    name.npy is n x 3 x 64 x 64
-    """
-    if not os.path.isfile(name):
-        im_data = data_celeb(n=n)
-        np.save(name, im_data)
-    else:
-        im_data = np.load(name)
-
-    im_data = torch.Tensor(im_data)
-    im_data = torch.utils.data.DataLoader(im_data, batch_size=BATCH, num_workers=2)
-
-    return(im_data)
-
+# load data
+im_data = load_data('celeba_data.npy', N_DATA, DATADIR, BATCH, (N_CHAN, DIMS))
+im_test = load_data('celeba_test.npy', N_TEST, DATADIR, BATCH, (N_CHAN, DIMS))
 
 class VAE(nn.Module):
     def __init__(self, nc, ngf, ndf, latent_variable_size):
@@ -219,6 +179,20 @@ class Discriminator(nn.Module):
     def forward(self, z):
         return(self.linear(z))
 
+## TODO: move this somewhere else (models should go in models.py)
+# instantiate models
+vae = VAE(nc=N_CHAN, ngf=128, ndf=128, latent_variable_size=N_Z)
+dis = Discriminator(N_Z)
+
+if CUDA:
+    vae = vae.cuda()
+    dis = dis.cuda()
+
+# instantiate optimizers
+opt_vae = torch.optim.Adam(vae.parameters(), lr=LR_VAE, betas=(0.5, 0.999))
+#opt_vae = torch.optim.SGD(vae.parameters(), lr=LR_VAE)
+opt_dis = torch.optim.Adam(dis.parameters(), lr=0.0005, betas=(0.5, 0.999))
+
 
 def calc_blur(X):
     """
@@ -301,13 +275,9 @@ def wae_mmd_loss(x, y):
     https://github.com/schelotto/Wasserstein_Autoencoders/blob/master/wae_mmd.py
     https://github.com/paruby/Wasserstein-Auto-Encoders/blob/master/models.py -- line 383
     """
-    #print('-')
-    #print('z_encoded: {} : {} : {}'.format(torch.min(x.data[0]), torch.mean(x.data[0]), torch.max(x.data[0])))
-    #print('z_sampled: {} : {} : {}'.format(torch.min(y.data[0]), torch.mean(y.data[0]), torch.max(y.data[0])))
+    print('z_encoded max: {}'.format(torch.max(x).data[0]))
 
-    # x = z_encoded
-    # y = z_sampled
-
+    # x = z_encoded # y = z_sampled
     norm_x = torch.sum(x**2, 1, keepdim=True)
     norm_y = torch.sum(y**2, 1, keepdim=True)
 
@@ -330,14 +300,14 @@ def wae_mmd_loss(x, y):
 
         res_xx = (C / (C + dist_xx + 1e-8))
         res_xx = torch.mul(res_xx, Variable(1.0-torch.eye(BATCH).cuda())) # 0 diag
-        res_xx = 1.0 * LAMBDA * torch.sum(res_xx) / (BATCH*(BATCH-1))     # diagonal not included
+        res_xx = 1.0 * torch.sum(res_xx) / (BATCH*(BATCH-1))     # diagonal not included
 
         res_yy = (C / (C + dist_yy + 1e-8))
         res_yy = torch.mul(res_yy, Variable(1.0-torch.eye(BATCH).cuda())) # 0 diag
-        res_yy = 1.0 * LAMBDA * torch.sum(res_yy) / (BATCH*(BATCH-1))     # diagonal not included
+        res_yy = 1.0 * torch.sum(res_yy) / (BATCH*(BATCH-1))     # diagonal not included
 
         res_xy = C / (C + dist_xy + 1e-8)
-        res_xy = 2.0 * LAMBDA * torch.sum(res_xy) / BATCH**2 # keep diagonal
+        res_xy = 2.0 * torch.sum(res_xy) / BATCH**2 # keep diagonal
 
         mmd += (res_xx + res_yy - res_xy)
 
@@ -345,6 +315,10 @@ def wae_mmd_loss(x, y):
 
 
 def calc_loss(X, recon, mu, logvar, method='vae'):
+    """
+    key observation: do we SUBTRACT or ADD LAMBDA*PENALTY/MMD?
+    in the paper he always adds LAMBDA*PENALTY/MMD...
+    """
 
     try:
         assert method in ['vae', 'wae-gan', 'wae-mmd']
@@ -370,10 +344,9 @@ def calc_loss(X, recon, mu, logvar, method='vae'):
         # normalize loss for discriminator by LAMBDA/BATCH
         loss_recon = loss_recon * SCALEBULLSHIT
         loss_gan = LAMBDA * loss_gan[0] / BATCH
-        loss = loss_recon - LAMBDA * loss_penalty
+        loss = loss_recon + (LAMBDA * loss_penalty) # NB: RECON - LAMBDA*PENALTY
 
         # loss is penalty from gan_loss (misclassification rate)
-        print('max_enc: {}'.format(torch.max(z_encoded).data[0]))
         print('recon: {}, penalty: {}, disc: {}'.format(
             loss_recon.data[0], loss_penalty.data[0], loss_gan.data[0]))
 
@@ -385,16 +358,15 @@ def calc_loss(X, recon, mu, logvar, method='vae'):
 
         # loss_mmd is already normalized by BATCH**2, see wae_mmd_loss
         loss_recon = loss_recon * SCALEBULLSHIT
-        loss = loss_recon + (LAMBDA * loss_mmd)
+        loss = loss_recon + (LAMBDA * loss_mmd) # NB: RECON - LAMBDA*MMD
 
         # loss is recon * loss_mmd (misclassification rate)
-        print('max_enc: {}'.format(torch.max(z_encoded).data[0]))
         print('recon: {}, mmd: {}'.format(loss_recon.data[0], loss_mmd.data[0]))
 
     return(loss, loss_gan)
 
 
-def train(epoch, data):
+def train(ep, data):
     vae.train()
     train_loss = 0
 
@@ -406,6 +378,9 @@ def train(epoch, data):
 
         recon, mu, logvar = vae.forward(X)
 
+        # with MDD, standard deviation blows up to produce NaNs without very small
+        # learning rates
+        #print('mu={}, logvar={}'.format(torch.max(mu).data[0], torch.max(logvar).data[0]))
         loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS)
 
         # optimize VAE / WAE
@@ -414,8 +389,8 @@ def train(epoch, data):
         opt_vae.step()
         train_loss += loss.data[0]
 
-        # optimize discriminator
         if LOSS == 'wae-gan':
+            # optimize discriminator
             opt_dis.zero_grad()
             loss_dis = loss_gan[0]
             loss_dis.backward()
@@ -428,7 +403,7 @@ def train(epoch, data):
     return(train_loss)
 
 
-def test(epoch, data):
+def test(ep, data):
     vae.eval()
     test_loss = 0
 
@@ -447,30 +422,22 @@ def test(epoch, data):
         # TODO: do something with the blur
         blur = calc_blur(recon)
 
-        save_image(X.data, 'img/{}_ep_{}_data.jpg'.format(LOSS, epoch), nrow=8, padding=2)
-        save_image(recon.data, 'img/{}_ep_{}_recon.jpg'.format(LOSS, epoch), nrow=8, padding=2)
+        save_image(X.data, 'img/{}_ep_{}_data.jpg'.format(LOSS, ep), nrow=8, padding=2)
+        save_image(recon.data, 'img/{}_ep_{}_recon.jpg'.format(LOSS, ep), nrow=8, padding=2)
 
-    print('[{}] test loss: {:.4f}'.format(epoch, test_loss))
+    print('[{}] test loss: {:.4f}'.format(ep, test_loss))
 
     return(test_loss)
 
+def main():
 
-im_data = load_data('celeba_data.npy', N_DATA)
-im_test = load_data('celeba_test.npy', N_TEST)
+    for ep in range(EPOCHS):
+        train_loss = train(ep, im_data)
+        test_loss  = test(ep,  im_test)
+        torch.save(vae.state_dict(),
+            'checkpoints/{}_ep_{}_train_loss_{:.4f}_test_loss_{:.4f}.pth'.format(
+            LOSS, ep, train_loss, test_loss))
 
-vae = VAE(nc=N_CHAN, ngf=128, ndf=128, latent_variable_size=N_Z)
-dis = Discriminator(N_Z)
-
-if CUDA:
-    vae = vae.cuda()
-    dis = dis.cuda()
-
-opt_vae = torch.optim.Adam(vae.parameters(), lr=0.0003, betas=(0.5, 0.999))
-opt_dis = torch.optim.Adam(dis.parameters(), lr=0.0005, betas=(0.5, 0.999))
-
-for ep in range(EPOCHS):
-    train_loss = train(ep, im_data)
-    test_loss = test(ep, im_test)
-    torch.save(vae.state_dict(), 'checkpoints/{}_ep_{}_train_loss_{:.4f}_test_loss_{:.4f}.pth'.format(
-        LOSS, ep, train_loss, test_loss))
+if __name__ == '__main__':
+    main()
 
