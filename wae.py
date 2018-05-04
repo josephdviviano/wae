@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-
 import os
 import sys
 import scandir
@@ -15,15 +14,18 @@ from torch.autograd import Variable
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+from torch.optim.lr_scheduler import MultiStepLR
 from torchvision.utils import save_image
 
 from utils import load_data, load_mnist
+from inception import InceptionV3
+from fid_score import get_activations, calculate_frechet_distance
 
 CHCKDIR = '/data/milatmp1/vivianoj/wae_checkpoints/'
 CUDA = torch.cuda.is_available()
 
-DATASET = 'mnist' # 'mnist' / 'celeb'
-LOSS = 'wae-mmd'     # 'vae', 'wae-gan', 'wae-mmd'
+DATASET = 'celeb' # 'mnist' / 'celeb'
+LOSS = 'wae-gan'  # 'vae', 'wae-gan', 'wae-mmd'
 
 # data options
 if DATASET == 'celeb':
@@ -34,10 +36,11 @@ if DATASET == 'celeb':
     N_TEST = 1000
     BATCH = 64
     SIGMA = 2             # celeba = 2, mnist = 1
+    SCALEBULLSHIT = 0.05
 
     if LOSS == 'wae-mmd':
         LAMBDA = 100          # celeb gan = 1, celeb mdd = 100, mnist = 10
-        LR_VAE = 0.001
+        LR_VAE = 0.0001       # !!!changed for stability!!!
         LR_DIS = None
         RECON = nn.MSELoss(size_average = False)
     elif LOSS == 'wae-gan':
@@ -47,9 +50,9 @@ if DATASET == 'celeb':
         RECON = nn.MSELoss(size_average = False)
     elif LOSS == 'vae':
         LAMBDA = None
-        LR_VAE = 0.0001      # 0.0003 for wae-gan
+        LR_VAE = 0.0001
         LR_DIS = None
-        RECON = nn.BCELoss()
+        RECON = nn.BCELoss(size_average = False)
 
     DATADIR = '/u/vivianoj/data/celeba/data/'
 
@@ -65,9 +68,11 @@ elif DATASET == 'mnist':
     BATCH = 100
     SIGMA = 1            # celeba = 2, mnist = 1
     LAMBDA = 10          # celeb gan = 1, celeb mdd = 100, mnist = 10
-    LR_VAE = 0.003
-    RECON = F.binary_cross_entropy # swapped these because BCELoss causes very
+    LR_VAE = 0.001
+    #RECON = F.binary_cross_entropy # swapped these because BCELoss causes very
     #RECON = nn.BCELoss()          # ugly CUDA device-side assertion errors
+    RECON = nn.MSELoss(size_average = False)
+    SCALEBULLSHIT = 1
 
     if LOSS == 'wae-mmd':
         LR_DIS = None
@@ -82,8 +87,7 @@ elif DATASET == 'mnist':
     im_data, im_test = load_mnist(batch_size=BATCH)
 
 # model options
-SCALEBULLSHIT = 0.05
-EPOCHS = 100
+EPOCHS = 80
 
 class VAE(nn.Module):
     def __init__(self, nc, ngf, ndf, latent_variable_size):
@@ -105,13 +109,10 @@ class VAE(nn.Module):
         # encoder
         self.e1 = nn.Sequential(nn.Conv2d(nc, ndf, self.conv_filt, 2, 2),
             nn.BatchNorm2d(ndf), self.relu)
-
         self.e2 = nn.Sequential(nn.Conv2d(ndf, ndf*2, self.conv_filt, 2, 2),
             nn.BatchNorm2d(ndf*2), self.relu)
-
         self.e3 = nn.Sequential(nn.Conv2d(ndf*2, ndf*4, self.conv_filt, 2, 2),
             nn.BatchNorm2d(ndf*4), self.relu)
-
         self.e4 = nn.Sequential(nn.Conv2d(ndf*4, ndf*8, self.conv_filt, 2, 2),
             nn.BatchNorm2d(ndf*8), self.relu)
 
@@ -120,31 +121,24 @@ class VAE(nn.Module):
 
         # decoder
         self.d1 = nn.Linear(latent_variable_size, ngf*8*self.size*self.size)
-
         self.d2 = nn.Sequential(nn.ConvTranspose2d(ngf*8, ngf*4, self.conv_filt-1, 2, 1),
             nn.BatchNorm2d(ngf*4, 1.e-3), self.relu)
 
         if DATASET == 'celeb':
-
             self.d3 = nn.Sequential(nn.ConvTranspose2d(ngf*4, ngf*2, self.conv_filt-1, 2, 1),
                 nn.BatchNorm2d(ngf*2, 1.e-3), self.relu)
-
             self.d4 = nn.Sequential(nn.ConvTranspose2d(ngf*2, ngf, self.conv_filt-1, 2, 1),
                 nn.BatchNorm2d(ngf, 1.e-3), self.relu)
-
             self.d5 = nn.Sequential(nn.ConvTranspose2d(ngf, nc, self.conv_filt-1, 2, 1),
                 nn.Sigmoid())
 
         elif DATASET == 'mnist':
             self.d3 = nn.Sequential(nn.ConvTranspose2d(ngf*4, ngf*2, self.conv_filt-2, 2, 1),
                 nn.BatchNorm2d(ngf*2, 1.e-3), self.relu)
-
             self.d4 = nn.Sequential(nn.ConvTranspose2d(ngf*2, ngf, self.conv_filt-1, 2, 1),
                 nn.BatchNorm2d(ngf, 1.e-3), self.relu)
-
             self.d5 = nn.Sequential(nn.ConvTranspose2d(ngf, nc, self.conv_filt-2, 2, 1),
                 nn.Sigmoid())
-
 
     def encoder(self, x):
         """ encoder architecture: note 2 read-out heads for mu and logvar """
@@ -153,10 +147,6 @@ class VAE(nn.Module):
         h3 = self.e3(h2)
         h4 = self.e4(h3)
         h4 = h4.view(-1, self.ndf*8*self.size*self.size)
-        #print(h1.size())
-        #print(h2.size())
-        #print(h3.size())
-        #print(h4.size())
 
         return(self.fc1(h4), self.fc2(h4))
 
@@ -166,6 +156,7 @@ class VAE(nn.Module):
 
         # with MDD, standard deviation blows up to produce NaNs without tiny
         # learning rates, so clamp std to prevent z_encoded from naning out
+        mu = torch.clamp(mu, -50, 50)
         std = torch.clamp(std, -50, 50)
 
         #print('mu={}, std={}'.format(torch.max(mu).data[0], torch.max(std).data[0]))
@@ -188,12 +179,6 @@ class VAE(nn.Module):
         h3 = self.d3(h2)
         h4 = self.d4(h3)
         h5 = self.d5(h4)
-        #print(z.size())
-        #print(h1.size())
-        #print(h2.size())
-        #print(h3.size())
-        #print(h4.size())
-        #print(h5.size())
 
         return(self.d5(h4))
 
@@ -257,9 +242,27 @@ if CUDA:
     vae = vae.cuda()
     dis = dis.cuda()
 
+if DATASET == 'celeb':
+    inc = InceptionV3([0])
+
+    if CUDA:
+        inc = inc.cuda()
+
 # instantiate optimizers
 opt_vae = torch.optim.Adam(vae.parameters(), lr=LR_VAE, betas=(0.5, 0.999))
 opt_dis = torch.optim.Adam(dis.parameters(), lr=LR_DIS, betas=(0.5, 0.999))
+
+# learning rate schedulers
+sch_1_vae = MultiStepLR(opt_vae, milestones=[30], gamma=0.5)
+sch_2_vae = MultiStepLR(opt_vae, milestones=[50], gamma=0.2)
+
+if LOSS == 'wae-gan':
+    sch_1_dis = MultiStepLR(opt_dis, milestones=[30], gamma=0.5)
+    sch_2_dis = MultiStepLR(opt_dis, milestones=[50], gamma=0.2)
+
+
+def isnan(x):
+    return(x != x)
 
 
 def calc_blur(X):
@@ -267,8 +270,7 @@ def calc_blur(X):
     https://github.com/tolstikhin/wae/blob/master/wae.py -- line 344
     Keep track of the min blurriness / batch for each test loop
     """
-
-    # RGB case
+    # RGB case -- convert to greyscale
     if X.size(1) == 3:
         X = torch.mean(X, 1, keepdim=True)
 
@@ -327,10 +329,6 @@ def wae_gan_loss(z_encoded, z_sample):
     return (loss_discrim, logits_pz, logits_qz), loss_penalty
 
 
-def isnan(x):
-    return(x != x)
-
-
 def wae_mmd_loss(x, y):
     """
     inverse multiquadratic kernel for MMD
@@ -342,7 +340,6 @@ def wae_mmd_loss(x, y):
     https://discuss.pytorch.org/t/maximum-mean-discrepancy-mmd-and-radial-basis-function-rbf/1875
     https://ermongroup.github.io/blog/a-tutorial-on-mmd-variational-autoencoders/
     """
-
     # x = z_encoded # y = z_sampled
     norm_x = torch.sum(x**2, 1, keepdim=True)
     norm_y = torch.sum(y**2, 1, keepdim=True)
@@ -366,16 +363,12 @@ def wae_mmd_loss(x, y):
 
         res_xx = (C / (C + dist_xx + 1e-8))
         dims = res_xx.size(0)
-        # NB: in original code he does NOT use the abs ... is it a bug?
-        #     otherwise it will make the entire matrix negative while 0-ing diag
         mask = Variable(torch.abs(1.0-torch.eye(dims)).cuda())
         res_xx = torch.mul(res_xx, mask)
         res_xx = 1.0 * torch.sum(res_xx) / (BATCH*(BATCH-1))     # no diag
 
         res_yy = (C / (C + dist_yy + 1e-8))
         dims = res_yy.size(0)
-        # NB: in original code he does NOT use the abs ... is it a bug?
-        #     otherwise it will make the entire matrix negative while 0-ing diag
         mask = Variable(torch.abs(1.0-torch.eye(dims)).cuda())
         res_yy = torch.mul(res_yy, mask)
         res_yy = 1.0 * torch.sum(res_yy) / (BATCH*(BATCH-1))     # no diag
@@ -423,7 +416,7 @@ def calc_loss(X, recon, mu, logvar, method='vae', verbose=False):
         # normalize loss for discriminator by LAMBDA/BATCH
         loss_recon = loss_recon * SCALEBULLSHIT
         loss_gan = LAMBDA * loss_gan[0] / BATCH
-        loss = loss_recon + (LAMBDA * loss_penalty) # NB: RECON + LAMBDA*PENALTY
+        loss = loss_recon + (LAMBDA * loss_penalty)
 
         # loss_penalty is the misclassification rate os z_encoded by discrim
         if verbose:
@@ -435,14 +428,13 @@ def calc_loss(X, recon, mu, logvar, method='vae', verbose=False):
                 loss_recon.data[0], loss_penalty.data[0], loss_gan.data[0]))
 
     elif method == 'wae-mmd':
-        # DOES BATCH SIZE NEED TO MATCH LATENT SPACE SIZE??
         z_encoded = vae.encode(X)
         z_sampled = vae.sample_pz(X.size(0)) # always normal distribution
         loss_mmd = wae_mmd_loss(z_encoded, z_sampled)
 
         # loss_mmd is already normalized by BATCH**2, see wae_mmd_loss
         loss_recon = loss_recon * SCALEBULLSHIT
-        loss = loss_recon + (LAMBDA * loss_mmd) # NB: RECON - LAMBDA*MMD
+        loss = loss_recon + (LAMBDA * loss_mmd)
 
         if verbose:
             print('z_encoded {} : {} : {}'.format(
@@ -505,11 +497,27 @@ def test(ep, data):
             X = X.unsqueeze(1)
 
         recon, mu, logvar = vae(X)
-        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS, verbose=True)
+        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS)
         test_loss += loss.data[0]
 
-        # TODO: do something with the blur
+        # convolution of data with a laplacian filter
         blur = calc_blur(recon)
+
+        # inception distance only works on celeb data set (requires 64x64)
+        fid = 0 # default value for mnist
+        if DATASET == 'celeb':
+            X_act = get_activations(X.cpu().data.numpy(), inc,
+                batch_size=BATCH, dims=DIMS, cuda=CUDA)
+            recon_act = get_activations(recon.cpu().data.numpy(), inc,
+                batch_size=BATCH, dims=DIMS, cuda=CUDA)
+
+            X_act_mu = np.mean(X_act, axis=0)
+            recon_act_mu = np.mean(recon_act, axis=0)
+            X_act_sigma = np.cov(X_act, rowvar=False)
+            recon_act_sigma = np.cov(recon_act, rowvar=False)
+
+            fid = calculate_frechet_distance(X_act_mu, X_act_sigma, recon_act_mu,
+                recon_act_sigma, eps=1e-6)
 
         save_image(X.data, 'img/{}_{}_ep_{}_data.jpg'.format(DATASET, LOSS, ep), nrow=8, padding=2)
         save_image(recon.data, 'img/{}_{}_ep_{}_recon.jpg'.format(DATASET, LOSS, ep), nrow=8, padding=2)
@@ -517,17 +525,35 @@ def test(ep, data):
     test_loss = test_loss / len(data)
     print('[{}] test loss: {:.4f}'.format(ep, test_loss))
 
-    return(test_loss)
+    return(test_loss, blur.data[0], fid)
 
 
 def main():
 
+    f = open('{}_{}_stats.csv'.format(DATASET, LOSS), 'w')
+    f.write('epoch,loss,blur,fid\n')
+
     for ep in range(EPOCHS):
+
+        # decay learning rates
+        sch_1_vae.step()
+        sch_2_vae.step()
+
+        if LOSS == 'wae-gan':
+            sch_1_dis.step()
+            sch_2_dis.step()
+
         train_loss = train(ep, im_data)
-        test_loss  = test(ep,  im_test)
-        torch.save(vae.state_dict(), os.path.join(CHCKDIR,
-            '{}_ep_{}_train_loss_{:.4f}_test_loss_{:.4f}.pth'.format(
-            LOSS, ep, train_loss, test_loss)))
+        test_loss, blur, fid = test(ep,  im_test)
+
+        f.write('{},{},{},{}\n'.format(ep, test_loss, blur, fid))
+
+        if ep % 10 == 0:
+            torch.save(vae.state_dict(), os.path.join(CHCKDIR,
+                '{}_{}_ep_{}_train_loss_{:.4f}_test_loss_{:.4f}.pth'.format(
+                DATASET, LOSS, ep, train_loss, test_loss)))
+
+    f.close()
 
 if __name__ == '__main__':
     main()
