@@ -25,7 +25,7 @@ CHCKDIR = '/data/milatmp1/vivianoj/wae_checkpoints/'
 CUDA = torch.cuda.is_available()
 EPOCHS = 80
 
-DATASET = 'celeb' # 'mnist' / 'celeb'
+DATASET = 'mnist' # 'mnist' / 'celeb'
 LOSS = 'wae-mmd'  # 'vae', 'wae-gan', 'wae-mmd'
 
 # data and loss-specific options
@@ -37,23 +37,26 @@ if DATASET == 'celeb':
     N_TEST = 1000        # test set size
     BATCH = 64           # batch size
     SIGMA = 2            # sigma used for normal dist. sampling and MMD kernel
-    SCALEBULLSHIT = 0.05 # a scaling factor on loss_recon (not in paper)
 
     if LOSS == 'wae-mmd':
-        LAMBDA = 100          # scaling factor on the WAE penalty
-        LR_VAE = 0.0001       # !!!changed for stability from orig paper!!!
+        LAMBDA = 10          # scaling factor on the WAE penalty !!!! changed for stability? !!!
+        LR_VAE = 0.00001        # !!!changed for stability from orig paper!!!
         LR_DIS = None         # Learning rate on discriminator (for wae-gan)
         RECON = nn.MSELoss(size_average = False)
+        SCALEBULLSHIT = 1 # a scaling factor on loss_recon (not in paper)
     elif LOSS == 'wae-gan':
         LAMBDA = 1
+        SCALEBULLSHIT = 0.05 # a scaling factor on loss_recon (not in paper)
         LR_VAE = 0.0003
         LR_DIS = 0.001
         RECON = nn.MSELoss(size_average = False)
     elif LOSS == 'vae':
         LAMBDA = None
+        SCALEBULLSHIT = 0.05 # a scaling factor on loss_recon (not in paper)
         LR_VAE = 0.0001
         LR_DIS = None
         RECON = nn.BCELoss(size_average = False)
+        #  nn.CrossEntropyLoss()
 
     DATADIR = '/u/vivianoj/data/celeba/data/'
 
@@ -67,23 +70,29 @@ elif DATASET == 'mnist':
     N_DATA = -1
     N_TEST = -1
     BATCH = 100
-    SIGMA = 1
     LAMBDA = 10
-    LR_VAE = 0.001
-    SCALEBULLSHIT = 1
     #RECON = F.binary_cross_entropy # swapped these because BCELoss causes very
                                     # ugly CUDA device-side assertion errors
     if LOSS == 'vae':
-        RECON = nn.BCELoss(size_average = False)
-    else:
+        SIGMA = 1
+        LR_VAE = 0.00001
+        SCALEBULLSHIT = 1
+        #RECON = nn.MSELoss(size_average = False)
+        #RECON = nn.BCELoss(size_average = False)
+        RECON = nn.BCEWithLogitsLoss(size_average = False)
+        LR_DIS = None
+    elif LOSS == 'wae-mmd':
+        SIGMA = 2
+        LR_VAE = 0.00001
+        SCALEBULLSHIT = 1
         RECON = nn.MSELoss(size_average = False)
-
-    if LOSS == 'wae-mmd':
         LR_DIS = None
     elif LOSS == 'wae-gan':
+        SIGMA = 2
+        LR_VAE = 0.001
+        SCALEBULLSHIT = 1
+        RECON = nn.MSELoss(size_average = False)
         LR_DIS = 0.0005
-    elif LOSS == 'vae':
-        LR_DIS = None
 
     im_data, im_test = load_mnist(batch_size=BATCH)
 
@@ -136,8 +145,11 @@ class VAE(nn.Module):
                 nn.BatchNorm2d(ngf*2, 1.e-3), self.relu)
             self.d4 = nn.Sequential(nn.ConvTranspose2d(ngf*2, ngf, self.conv_filt-1, 2, 1),
                 nn.BatchNorm2d(ngf, 1.e-3), self.relu)
-            self.d5 = nn.Sequential(nn.ConvTranspose2d(ngf, nc, self.conv_filt-2, 2, 1),
-                nn.Sigmoid())
+            if LOSS == 'vae':
+                self.d5 = nn.Sequential(nn.ConvTranspose2d(ngf, nc, self.conv_filt-2, 2, 1))
+            else:
+                self.d5 = nn.Sequential(nn.ConvTranspose2d(ngf, nc, self.conv_filt-2, 2, 1),
+                    nn.Sigmoid())
 
     def encoder(self, x):
         """ encoder architecture: note 2 read-out heads for mu and logvar """
@@ -155,10 +167,6 @@ class VAE(nn.Module):
 
         # with MDD, standard deviation blows up to produce NaNs without tiny
         # learning rates, so clamp std to prevent z_encoded from naning out
-        # I'm also clamping the mean, which isn't done in the original source,
-        # but sometimes helps. However typically when the mean saturates the
-        # outputs are not useful anyhow.
-        mu = torch.clamp(mu, -50, 50)
         std = torch.clamp(std, -50, 50)
 
         #print('mu={}, std={}'.format(torch.max(mu).data[0], torch.max(std).data[0]))
@@ -217,7 +225,6 @@ class Discriminator(nn.Module):
         self.hid_size = 512
 
         # 3 hidden-layer discriminator
-        # TODO: add sigmoid at end? Also, we're using 2 output nodes now...
         self.linear = nn.Sequential(
             nn.Linear(self.latent_variable_size, self.hid_size), nn.ReLU(),
             nn.Linear(self.hid_size, self.hid_size), nn.ReLU(),
@@ -293,6 +300,11 @@ def calc_blur(X):
 
 
 def ae_loss(recon_x, X):
+    #if LOSS == 'vae' and DATASET == 'mnist':
+    #    return(RECON(recon_x, X.unsqueeze(1)))
+    #elif LOSS == 'vae':
+    #    return(RECON(recon_x, X.long()))
+    #else:
     return(RECON(recon_x, X))
 
 
@@ -383,6 +395,11 @@ def wae_mmd_loss(x, y):
     if isnan(mmd.data[0]):
         import IPython; IPython.embed()
 
+    # mmd occasionally grows very large and causes the weights to explode, so
+    # we clamp it what what are we think are 'large' values (not in paper or
+    # original source code).
+    mmd = torch.clamp(mmd, -5, 5)
+
     return(mmd)
 
 
@@ -459,9 +476,13 @@ def train(ep, data):
             X = X.cuda()
         X = Variable(X)
 
+        # inserts single channel dimensions for black and white images
+        if DATASET == 'mnist':
+            X = X.unsqueeze(1)
+
         recon, mu, logvar = vae.forward(X)
 
-        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS)
+        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS, verbose=True)
 
         # optimize VAE / WAE
         opt_vae.zero_grad()
@@ -499,7 +520,7 @@ def test(ep, data):
             X = X.unsqueeze(1)
 
         recon, mu, logvar = vae(X)
-        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS)
+        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS, verbose=True)
         test_loss += loss.data[0]
 
         # convolution of data with a laplacian filter
@@ -550,7 +571,9 @@ def main():
 
         f.write('{},{},{},{}\n'.format(ep, test_loss, blur, fid))
 
-        if ep % 10 == 0:
+        print('{}: {} LOSS = {}/{}'.format(DATASET, LOSS, train_loss, test_loss))
+
+        if ep+1 % 10 == 0:
             torch.save(vae.state_dict(), os.path.join(CHCKDIR,
                 '{}_{}_ep_{}_train_loss_{:.4f}_test_loss_{:.4f}.pth'.format(
                 DATASET, LOSS, ep, train_loss, test_loss)))

@@ -31,3 +31,9 @@ Pytorch replication of the results presented in [Tolstikhin, Bousquet, Gelly, Sc
 + https://github.com/mseitzer/pytorch-fid
     + frechet inception distance
 
+
+** todo **
+
++ FID measure
++ Blur measure
++
