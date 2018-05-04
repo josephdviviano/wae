@@ -49,7 +49,7 @@ if DATASET == 'celeb':
         LAMBDA = None
         LR_VAE = 0.0001      # 0.0003 for wae-gan
         LR_DIS = None
-        RECON =  nn.BCELoss(size_average = False)
+        RECON = nn.BCELoss()
 
     DATADIR = '/u/vivianoj/data/celeba/data/'
 
@@ -62,11 +62,12 @@ elif DATASET == 'mnist':
     N_CHAN = 1
     N_DATA = -1
     N_TEST = -1
-    BATCH = 8
+    BATCH = 100
     SIGMA = 1            # celeba = 2, mnist = 1
     LAMBDA = 10          # celeb gan = 1, celeb mdd = 100, mnist = 10
     LR_VAE = 0.003
-    RECON =  nn.BCELoss(size_average = False)
+    RECON = F.binary_cross_entropy # swapped these because BCELoss causes very
+    #RECON = nn.BCELoss()          # ugly CUDA device-side assertion errors
 
     if LOSS == 'wae-mmd':
         LR_DIS = None
@@ -258,8 +259,7 @@ if CUDA:
 
 # instantiate optimizers
 opt_vae = torch.optim.Adam(vae.parameters(), lr=LR_VAE, betas=(0.5, 0.999))
-#opt_vae = torch.optim.SGD(vae.parameters(), lr=LR_VAE)
-opt_dis = torch.optim.Adam(dis.parameters(), lr=0.0005, betas=(0.5, 0.999))
+opt_dis = torch.optim.Adam(dis.parameters(), lr=LR_DIS, betas=(0.5, 0.999))
 
 
 def calc_blur(X):
@@ -385,7 +385,6 @@ def wae_mmd_loss(x, y):
 
         mmd += (res_xx + res_yy - res_xy)
 
-
     if isnan(mmd.data[0]):
         import IPython; IPython.embed()
 
@@ -459,15 +458,12 @@ def train(ep, data):
     vae.train()
     train_loss = 0
 
+    batch_num = 0
     for batch, X in enumerate(data):
 
         if CUDA:
             X = X.cuda()
         X = Variable(X)
-
-        # inserts single channel dimensions for black and white images
-        if DATASET == 'mnist':
-            X = X.unsqueeze(1)
 
         recon, mu, logvar = vae.forward(X)
 
@@ -485,15 +481,13 @@ def train(ep, data):
             loss_dis = loss_gan[0]
             loss_dis.backward()
             opt_dis.step()
-        else:
-            opt_dis.zero_grad()
-            opt_dis.step()
 
+        batch_num += 1
         if batch % 100 == 0:
             print('[ep={}/batch={}]: loss={:.4f}'.format(
-                ep, batch, loss.data[0]))
+                ep, batch, train_loss / batch_num))
 
-    return(train_loss)
+    return(train_loss / len(data))
 
 
 def test(ep, data):
@@ -506,6 +500,10 @@ def test(ep, data):
             X = X.cuda()
         X = Variable(X)
 
+        # inserts single channel dimensions for black and white images
+        if DATASET == 'mnist':
+            X = X.unsqueeze(1)
+
         recon, mu, logvar = vae(X)
         loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS, verbose=True)
         test_loss += loss.data[0]
@@ -513,10 +511,10 @@ def test(ep, data):
         # TODO: do something with the blur
         blur = calc_blur(recon)
 
-        import IPython; IPython.embed()
-        save_image(X.data, 'img/{}_ep_{}_data.jpg'.format(LOSS, ep), nrow=8, padding=2)
-        save_image(recon.data, 'img/{}_ep_{}_recon.jpg'.format(LOSS, ep), nrow=8, padding=2)
+        save_image(X.data, 'img/{}_{}_ep_{}_data.jpg'.format(DATASET, LOSS, ep), nrow=8, padding=2)
+        save_image(recon.data, 'img/{}_{}_ep_{}_recon.jpg'.format(DATASET, LOSS, ep), nrow=8, padding=2)
 
+    test_loss = test_loss / len(data)
     print('[{}] test loss: {:.4f}'.format(ep, test_loss))
 
     return(test_loss)
