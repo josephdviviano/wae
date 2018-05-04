@@ -23,29 +23,30 @@ from fid_score import get_activations, calculate_frechet_distance
 
 CHCKDIR = '/data/milatmp1/vivianoj/wae_checkpoints/'
 CUDA = torch.cuda.is_available()
+EPOCHS = 80
 
 DATASET = 'celeb' # 'mnist' / 'celeb'
-LOSS = 'wae-gan'  # 'vae', 'wae-gan', 'wae-mmd'
+LOSS = 'wae-mmd'  # 'vae', 'wae-gan', 'wae-mmd'
 
-# data options
+# data and loss-specific options
 if DATASET == 'celeb':
-    DIMS = 64  # dependent on script that generates preprocessed data
-    N_Z = 64             # mnist = 8, celeb = 64
-    N_CHAN = 3
-    N_DATA = 20000
-    N_TEST = 1000
-    BATCH = 64
-    SIGMA = 2             # celeba = 2, mnist = 1
-    SCALEBULLSHIT = 0.05
+    DIMS = 64            # image dimentions (assume square)
+    N_Z = 64             # latent variable dimention
+    N_CHAN = 3           # 3 = rgb, 1 = b&w
+    N_DATA = 20000       # training set size
+    N_TEST = 1000        # test set size
+    BATCH = 64           # batch size
+    SIGMA = 2            # sigma used for normal dist. sampling and MMD kernel
+    SCALEBULLSHIT = 0.05 # a scaling factor on loss_recon (not in paper)
 
     if LOSS == 'wae-mmd':
-        LAMBDA = 100          # celeb gan = 1, celeb mdd = 100, mnist = 10
-        LR_VAE = 0.0001       # !!!changed for stability!!!
-        LR_DIS = None
+        LAMBDA = 100          # scaling factor on the WAE penalty
+        LR_VAE = 0.0001       # !!!changed for stability from orig paper!!!
+        LR_DIS = None         # Learning rate on discriminator (for wae-gan)
         RECON = nn.MSELoss(size_average = False)
     elif LOSS == 'wae-gan':
         LAMBDA = 1
-        LR_VAE = 0.0003      # 0.0003 for wae-gan
+        LR_VAE = 0.0003
         LR_DIS = 0.001
         RECON = nn.MSELoss(size_average = False)
     elif LOSS == 'vae':
@@ -60,19 +61,22 @@ if DATASET == 'celeb':
     im_test = load_data('celeba_test.npy', N_TEST, DATADIR, BATCH, (N_CHAN, DIMS))
 
 elif DATASET == 'mnist':
-    DIMS = 28  # dependent on script that generates preprocessed data
-    N_Z = 8             # mnist = 8, celeb = 64
+    DIMS = 28
+    N_Z = 8
     N_CHAN = 1
     N_DATA = -1
     N_TEST = -1
     BATCH = 100
-    SIGMA = 1            # celeba = 2, mnist = 1
-    LAMBDA = 10          # celeb gan = 1, celeb mdd = 100, mnist = 10
+    SIGMA = 1
+    LAMBDA = 10
     LR_VAE = 0.001
-    #RECON = F.binary_cross_entropy # swapped these because BCELoss causes very
-    #RECON = nn.BCELoss()          # ugly CUDA device-side assertion errors
-    RECON = nn.MSELoss(size_average = False)
     SCALEBULLSHIT = 1
+    #RECON = F.binary_cross_entropy # swapped these because BCELoss causes very
+                                    # ugly CUDA device-side assertion errors
+    if LOSS == 'vae':
+        RECON = nn.BCELoss(size_average = False)
+    else:
+        RECON = nn.MSELoss(size_average = False)
 
     if LOSS == 'wae-mmd':
         LR_DIS = None
@@ -81,13 +85,8 @@ elif DATASET == 'mnist':
     elif LOSS == 'vae':
         LR_DIS = None
 
-    DATADIR = '/u/vivianoj/data/celeba/data/'
-    CUDA = torch.cuda.is_available()
-
     im_data, im_test = load_mnist(batch_size=BATCH)
 
-# model options
-EPOCHS = 80
 
 class VAE(nn.Module):
     def __init__(self, nc, ngf, ndf, latent_variable_size):
@@ -156,6 +155,9 @@ class VAE(nn.Module):
 
         # with MDD, standard deviation blows up to produce NaNs without tiny
         # learning rates, so clamp std to prevent z_encoded from naning out
+        # I'm also clamping the mean, which isn't done in the original source,
+        # but sometimes helps. However typically when the mean saturates the
+        # outputs are not useful anyhow.
         mu = torch.clamp(mu, -50, 50)
         std = torch.clamp(std, -50, 50)
 
