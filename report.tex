@@ -122,7 +122,7 @@ then we see that in the left picture the data point $X$ are mapped to a same $Y$
 with a hight probability while in the right picture data points $X$ are mapped to
 $Y$ a lower probability. }
 
-\label{fig:WAE}
+\label{Figure 1}
 \end{figure}\\
 
  \textbf{What is Wasserstein distance?}
@@ -186,6 +186,9 @@ auto encoder approch (making use of the KL-divergence), the authors trained 3
 models: a 'stock' VAE, a WAE using the GAN-based Wasserstien penalty, and a WAE
 using the MDD-based Wasserstien penalty. The motivation was to empirically test
 whether the Wasserstein distance improves the reconstruction quality observed.
+The reconstruction analysis and latent space traversal analyses were standard.
+It was also good that they included a measure of image sharpness and the
+inception distance scores to quantify the claims made by this paper.
 
 \subsection{Reproducing the main results}
 
@@ -197,18 +200,105 @@ These experiments were run on both the celeba and mnist datasets. Note that,
 due to time restictions, we only trained our models on 10\% of the celeba
 dataset, and used a small test set of 1000 images.
 
+Both the encoder-decoder architecture as well as the discriminator architecture
+(when applicable) used the ADAM optimizer. As in the original paper, the
+learning rate was halved at epoch 30, and then reduced further by a factor of 5
+at epoch 50. We trained all models for 80 epochs. We used a convolutional
+architecture mirroring that used the in the DC-GAN paper. The discriminator was
+a 4-layer fully connected network. Below, we report the  hyperparameters used in
+each of our 6 analysis. All hyperparameters that are different from those in the
+original paper (out of necessity to stabilize training) are marked with a
+\textbf{*}:\\
+
+\textbf{NB:} lambda refers to the scaling factor on the WAE penalty,
+scalebullshit refers to the scaling factor on the reconstruction loss and sigma
+refers to the variance of the latent layer used for sampled noise.
+
+For the two WAE CELEBA runs, we used mean squared error reconstruction loss.
+For the VAE, we used binary cross entropy loss. The latent dimention was 64
+for all anlysis: \\
+
+\textbf{CELEBA VAE:} Batch size = 64, learning rate = 0.0001, lambda = N/A,
+scalebullshit = 0.05, sigma = 2. \\
+
+\textbf{CELEBA WAE-GAN:} Batch size = 64, learning rate = 0.0003, lambda = 1,
+scalebullshit = 0.05, sigma = 2. \\
+
+\textbf{CELEBA WAE-MMD:} Batch size = 64, learning rate = 0.00001\textbf{*},
+lambda = 10\textbf{*}, scalebullshit = 1, sigma = 2. \\
+
+Notes: We had to turn down lambda and the learning rate, and turn up
+scalebullshit, in order to stabilize training (i.e., more heavily weight the
+reconstruction part of the loss). Training of this model was quite unstable and
+required many attempts. \\
+
+Suprisingly, we generally had more trouble stabilizing the training for the
+MNIST data. Again, the two WAE CELEBA runs used mean squared error
+reconstruction loss, while VAE run used binary cross entropy. The latent
+dimention was 8 for all analysis: \\
+
+\textbf{MNIST VAE:} Batch size = 100, learning rate = 0.001,
+lambda = N/A, scalebullshit = 1, sigma = 1\textbf{*}. \\
+
+\textbf{MNIST WAE-GAN:} Batch size = 100, learning rate = 0.001, lambda = 10,
+scalebullshit = 1, sigma = 2. \\
+
+Notes: This was relatively easy to train (little instability issues). \\
+
+\textbf{MNIST WAE-MDD:} Batch size = 100, learning rate = 0.00001\textbf{*},
+scalebullshit = 1, sigma = 2. \\
+
+Notes: Extremely finicky, even worse than the CELEBA dataset. Gradients easily
+explode, requiring very small learning rates. \\
+
+Below we show the reconstructed data for all analysis at epoch 80: \\
+
+\begin{figure}[h]
+\includegraphics[width=100mm]{celeb_vae_ep_79_recon}
+\caption{Test CelebA reconstructions at epoch 80 using the VAE model.}
+\label{Figure 2}
+\end{figure}
+
+\begin{figure}[h]
+\includegraphics[width=100mm]{celeb_wae-gan_ep_79_recon}
+\caption{Test CelebA reconstructions at epoch 80 using the WAE GAN model.}
+\label{Figure 3}
+\end{figure}
+
+\begin{figure}[h]
+\includegraphics[width=100mm]{celeb_wae-mmd_ep_79_recon}
+\caption{Test CelebA reconstructions at epoch 80 using the WAE MMD model.}
+\label{Figure 4}
+\end{figure}
+
+\begin{figure}[h]
+\includegraphics[width=100mm]{mnist_vae_ep_79_recon}
+\caption{Test MNIST reconstructions at epoch 80 using the VAE model.}
+\label{Figure 5}
+\end{figure}
+
+\begin{figure}[h]
+\includegraphics[width=100mm]{mnist_wae-gan_ep_79_recon}
+\caption{Test MNIST reconstructions at epoch 80 using the WAE GAN model.}
+\label{Figure 6}
+\end{figure}
+
+\begin{figure}[h]
+\includegraphics[width=100mm]{mnist_wae-mmd_ep_79_recon}
+\caption{Test MNIST reconstructions at epoch 80 using the WAE MMD model.}
+\label{Figure 7}
+\end{figure}
 
 
-    Motivation of the experiments
+Finally, the authors report the sharpness and inception scores for the CELEBA
+dataset, which we reproduce from our own results here: \\
 
+\textbf{ONLY THING LEFT TO ADD}\\
 
-    What are the authors trying to demonstrate with the experiments?
-
-    Are there experiments that might demonstrate weaknesses/strengths that should be there but arent?
-
-    Are there any flaws in the experiments they run? What are they?
-
-    Reproducing main results (tables, figures, etc)
+Due to time constraints, we did not replicate the latent-space traversal
+analysis. We do not consider it a main result becuase it does little to compare
+WAE with VAE, and we ran short on time due to having to debug the unstable
+training of the MNIST data and the MMD-based analysis.
 
 
 \section{Discussion}
@@ -249,9 +339,26 @@ not reported in the paper. All references below refer to the official code: \\
           frequently for the MMD method. The authors combat this by clamping the
           sigma value during reparameterization between -50 and 50, which they
           do not comment on anywhere in the paper or code. We found this to be a
-          crucial implementation detail.}
+          crucial implementation detail, although it did not combat the issue
+          entirely.}
 
-    \item{}
+    \item{In general, the balance between the reconstruction term and the
+          Wasserstien penalty is extremely sensitive. The authors would have done
+          well to have given a theoretical intution as to whic this might be true
+          as well as practical recomendations to mitigate this issue when trying
+          to implement the WAE yourself.}
+
+Our major concern is the large difference in performance obvserved between using
+\textbf{WAE-GAN}, which we found to be both stable and produce very good results,
+and \textbf{WAE-MMD}, which we found to be extremely finicky and only sometimes
+produce reasonable results after fastidious hyper-parameter fine-tuning. The
+relationship betweem the reconstruction term and the WAE penalty is really evident
+when using the MMD method, but the authors don't give any explaination as to why
+either method would perform differently. Based on our experiments, we find it
+very hard to believe that the authors did not encounter training instabilities
+when using the MMD method, and would have liked to see the authors devote some
+attention to explaining the real-world differences between these two approaches
+to estimating the Wasserstien distance. \\
 
 \bibliographystyle{plain}
 \bibliography{references}

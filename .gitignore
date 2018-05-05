@@ -3,4 +3,7 @@ raw/*
 checkpoints/*
 *.npy
 *.zip
+*.aux
+*.log
+*.out
 core
