@@ -1,7 +1,6 @@
 data/*
 raw/*
-img/*
 checkpoints/*
 *.npy
 *.zip
-
+core
