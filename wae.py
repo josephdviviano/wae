@@ -26,7 +26,7 @@ CUDA = torch.cuda.is_available()
 EPOCHS = 80
 
 DATASET = 'mnist' # 'mnist' / 'celeb'
-LOSS = 'wae-mmd'  # 'vae', 'wae-gan', 'wae-mmd'
+LOSS = 'vae'  # 'vae', 'wae-gan', 'wae-mmd'
 
 # data and loss-specific options
 if DATASET == 'celeb':
@@ -71,22 +71,21 @@ elif DATASET == 'mnist':
     N_TEST = -1
     BATCH = 100
     LAMBDA = 10
-    #RECON = F.binary_cross_entropy # swapped these because BCELoss causes very
-                                    # ugly CUDA device-side assertion errors
+
     if LOSS == 'vae':
         SIGMA = 1
-        LR_VAE = 0.00001
+        LR_VAE = 0.001
         SCALEBULLSHIT = 1
-        #RECON = nn.MSELoss(size_average = False)
-        #RECON = nn.BCELoss(size_average = False)
-        RECON = nn.BCEWithLogitsLoss(size_average = False)
+        RECON = nn.BCELoss(size_average = False)
         LR_DIS = None
+
     elif LOSS == 'wae-mmd':
         SIGMA = 2
         LR_VAE = 0.00001
         SCALEBULLSHIT = 1
         RECON = nn.MSELoss(size_average = False)
         LR_DIS = None
+
     elif LOSS == 'wae-gan':
         SIGMA = 2
         LR_VAE = 0.001
@@ -145,10 +144,7 @@ class VAE(nn.Module):
                 nn.BatchNorm2d(ngf*2, 1.e-3), self.relu)
             self.d4 = nn.Sequential(nn.ConvTranspose2d(ngf*2, ngf, self.conv_filt-1, 2, 1),
                 nn.BatchNorm2d(ngf, 1.e-3), self.relu)
-            if LOSS == 'vae':
-                self.d5 = nn.Sequential(nn.ConvTranspose2d(ngf, nc, self.conv_filt-2, 2, 1))
-            else:
-                self.d5 = nn.Sequential(nn.ConvTranspose2d(ngf, nc, self.conv_filt-2, 2, 1),
+            self.d5 = nn.Sequential(nn.ConvTranspose2d(ngf, nc, self.conv_filt-2, 2, 1),
                     nn.Sigmoid())
 
     def encoder(self, x):
@@ -311,10 +307,8 @@ def ae_loss(recon_x, X):
 def kld_loss(mu, logvar):
     """
     https://arxiv.org/abs/1312.6114 (Appendix B)
-    0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
     """
-    kld_element = mu.pow(2).add_(logvar.exp()).mul_(-1).add_(1).add_(logvar)
-    kld = torch.sum(kld_element).mul_(-0.5)
+    kld = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
 
     return(kld)
 
@@ -418,13 +412,15 @@ def calc_loss(X, recon, mu, logvar, method='vae', verbose=False):
     loss_gan = None # default value, if not using wae-gan
 
     loss_recon = ae_loss(recon, X)
-    loss_recon = loss_recon / BATCH # normalize loss_recon by BATCH
+    if method != 'vae':
+        loss_recon = loss_recon / BATCH # normalize loss_recon by BATCH
 
     if method == 'vae':
         kld = kld_loss(mu, logvar)
         loss = loss_recon + kld
 
         if verbose:
+            print('mu: {}, logvar: {}'.format(torch.max(mu).data[0], torch.max(logvar).data[0]))
             print('recon: {}, kld: {}'.format(loss_recon.data[0], kld.data[0]))
 
     elif method == 'wae-gan':
