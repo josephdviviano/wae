@@ -38,25 +38,26 @@ if DATASET == 'celeb':
     BATCH = 64           # batch size
     SIGMA = 2            # sigma used for normal dist. sampling and MMD kernel
 
-    if LOSS == 'wae-mmd':
-        LAMBDA = 10          # scaling factor on the WAE penalty !!!! changed for stability? !!!
-        LR_VAE = 0.00001        # !!!changed for stability from orig paper!!!
-        LR_DIS = None         # Learning rate on discriminator (for wae-gan)
-        RECON = nn.MSELoss(size_average = False)
-        SCALEBULLSHIT = 1 # a scaling factor on loss_recon (not in paper)
-    elif LOSS == 'wae-gan':
-        LAMBDA = 1
-        SCALEBULLSHIT = 0.05 # a scaling factor on loss_recon (not in paper)
-        LR_VAE = 0.0003
-        LR_DIS = 0.001
-        RECON = nn.MSELoss(size_average = False)
-    elif LOSS == 'vae':
+    if LOSS == 'vae':
         LAMBDA = None
-        SCALEBULLSHIT = 0.05 # a scaling factor on loss_recon (not in paper)
         LR_VAE = 0.0001
         LR_DIS = None
         RECON = nn.BCELoss(size_average = False)
-        #  nn.CrossEntropyLoss()
+        SCALEBULLSHIT = 0.05 # a scaling factor on loss_recon (not in paper)
+
+    elif LOSS == 'wae-gan':
+        LAMBDA = 1
+        LR_VAE = 0.0003
+        LR_DIS = 0.001
+        RECON = nn.MSELoss(size_average = False)
+        SCALEBULLSHIT = 0.05 # a scaling factor on loss_recon (not in paper)
+
+    elif LOSS == 'wae-mmd':
+        LAMBDA = 10        # scaling factor on the WAE penalty !!!! changed for stability? !!!
+        LR_VAE = 0.00001   # !!!changed for stability from orig paper!!!
+        LR_DIS = None      # Learning rate on discriminator (for wae-gan)
+        RECON = nn.MSELoss(size_average = False)
+        SCALEBULLSHIT = 1 # a scaling factor on loss_recon (not in paper)
 
     DATADIR = '/u/vivianoj/data/celeba/data/'
 
@@ -79,6 +80,13 @@ elif DATASET == 'mnist':
         RECON = nn.BCELoss(size_average = False)
         LR_DIS = None
 
+    elif LOSS == 'wae-gan':
+        SIGMA = 2
+        LR_VAE = 0.001
+        SCALEBULLSHIT = 1
+        RECON = nn.MSELoss(size_average = False)
+        LR_DIS = 0.0005
+
     elif LOSS == 'wae-mmd':
         SIGMA = 2
         LR_VAE = 0.00001
@@ -86,12 +94,6 @@ elif DATASET == 'mnist':
         RECON = nn.MSELoss(size_average = False)
         LR_DIS = None
 
-    elif LOSS == 'wae-gan':
-        SIGMA = 2
-        LR_VAE = 0.001
-        SCALEBULLSHIT = 1
-        RECON = nn.MSELoss(size_average = False)
-        LR_DIS = 0.0005
 
     im_data, im_test = load_mnist(batch_size=BATCH)
 
@@ -296,11 +298,7 @@ def calc_blur(X):
 
 
 def ae_loss(recon_x, X):
-    #if LOSS == 'vae' and DATASET == 'mnist':
-    #    return(RECON(recon_x, X.unsqueeze(1)))
-    #elif LOSS == 'vae':
-    #    return(RECON(recon_x, X.long()))
-    #else:
+    # we do this so we can swap in different reconstruction terms
     return(RECON(recon_x, X))
 
 
@@ -412,8 +410,6 @@ def calc_loss(X, recon, mu, logvar, method='vae', verbose=False):
     loss_gan = None # default value, if not using wae-gan
 
     loss_recon = ae_loss(recon, X)
-    if method != 'vae':
-        loss_recon = loss_recon / BATCH # normalize loss_recon by BATCH
 
     if method == 'vae':
         kld = kld_loss(mu, logvar)
@@ -478,7 +474,7 @@ def train(ep, data):
 
         recon, mu, logvar = vae.forward(X)
 
-        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS, verbose=True)
+        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS)
 
         # optimize VAE / WAE
         opt_vae.zero_grad()
@@ -516,7 +512,7 @@ def test(ep, data):
             X = X.unsqueeze(1)
 
         recon, mu, logvar = vae(X)
-        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS, verbose=True)
+        loss, loss_gan = calc_loss(X, recon, mu, logvar, method=LOSS)
         test_loss += loss.data[0]
 
         # convolution of data with a laplacian filter
