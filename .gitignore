@@ -4,4 +4,6 @@ img/*
 checkpoints/*
 *.npy
 *.zip
-
+*.aux
+*.log
+*.out
