@@ -1,23 +1,28 @@
 \documentclass[12pt,english]{amsart}
-\usepackage{amssymb,amsmath,amscd,graphicx,fontenc,bbold,amsthm,mathrsfs,mathtools}
+\usepackage[utf8]{inputenc}
+\usepackage{fontenc}
+\usepackage{mathtools}
+\usepackage{amscd, bbold}
+\usepackage{amsmath,amsthm,amssymb,amsfonts,mathrsfs}
 \usepackage[pdftex,bookmarks,colorlinks,breaklinks]{hyperref}
 \usepackage{comment}
 \usepackage{graphicx}
+\setlength{\parindent}{0pt}
 \usepackage[top=3cm,bottom=3cm,right=2.3cm,left=2.3cm,twoside=false]{geometry}
 
 \hypersetup{linkcolor=blue,citecolor=red,filecolor=dullmagenta,urlcolor=blue}
 %\usepackage{verbatim}
 %\usepackage{showkeys}
 
-\newtheorem{theorem}{Theorem}[section]
-\newtheorem{definition}{Definition}
-\newtheorem{lemma}[theorem]{Lemma}
-\newtheorem{proposition}[theorem]{Proposition}
-\newtheorem{corollary}[theorem]{Corollary}
-\theoremstyle{definition}
-\newtheorem{remark}{Remark}
-\newtheorem{conj}{Conjecture}
-\newtheorem{notation}{Notation}
+%\newtheorem{theorem}{Theorem}[section]
+%\newtheorem{definition}{Definition}
+%\newtheorem{lemma}[theorem]{Lemma}
+%\newtheorem{proposition}[theorem]{Proposition}
+%\newtheorem{corollary}[theorem]{Corollary}
+%\theoremstyle{definition}
+%\newtheorem{remark}{Remark}
+%\newtheorem{conj}{Conjecture}
+%\newtheorem{notation}{Notation}
 
 \DeclarePairedDelimiter\abs{\lvert}{\rvert}%
 \DeclarePairedDelimiter\norm{\lVert}{\rVert}%
@@ -25,6 +30,8 @@
 \newcommand{\bnxk}{{\mathrm{N}}(x,k)}
 \newcommand{\px}[1]{\pi(x,{#1})}
 \newcommand{\Px}[1]{\Pi(x,{#1})}
+\newcommand{\E}{\mathrm{E}}
+\DeclareMathOperator*{\argmax}{arg\,max}
 
 \graphicspath{ {./img/} }
 
@@ -41,6 +48,12 @@
 \maketitle
 %\tableofcontents
 %==========================================
+
+\section{Introduction}
+
+Method to estimate the density distribution of data have been studied for a long time. Density estimation is indeed required in many applied science fields (e.g. physics, economics, insurance etc.). Formally, given an observed dataset $X\in\mathcal{X}$ the goal is to approximate the true distribution $P_X$ with $\tilde{P}_X\in\mathcal{P}$ where $\mathcal{P}$ is the set of all distribution of $X$. The model is then selected using some goodness of fit criteria, usually function of the likelihood, e.g. the selected model could be $\argmax_{P\in\mathcal{P}}\E \log P(X)$. A common method in practice is to make some hypothesis about the prior distribution (e.g. gamma, lognormal, ...) and find the parameters that gives the best fit to the data distribution for all of the selected prior distributions. The selected distribution is the one that gives the best fit over all the tested distribution. Note that model usually have an infinite number of possible parametrization $\theta$ and the number of possible model that are consistent with the definition of probability distribution is also infinite. Thus the approach in intractable and in practice a finite set of model to be tested is selected. This approach have huge drawback. If the best model is not in the set to be tested, then it is not possible to find the maximum. It is also likely to overfit and the specified model is these setting usually lack the capacity required to learn complex relation. \\
+
+On the other hand, recently developed generative approaches, VAE and GAN, do not require hypothesis on the prior of the distribution of the data. These two approaches allow the use of highly flexible implicit model $P_G$ to modeled complex underlying distribution from observed data. They are learn by comparing sample from the model $P_G$ and observed data and they can be scaled up with SGD. Their setting comes with efficient regularizing method allowing good generalization. 1In these settings, the distribution is defined as $p(x) = \int p(x|z)p(z)dz$ where $p(z)$ is a fixed distribution and $p(x|z)$ is learned by comparing sample from the model $\tilde{x}\sim P_G$ and observed data $x$. This work present a summary of a newly developed approach to learn the (possibly random) mapping $p(x|z)$ presented in a recently published paper \cite{2017arXiv171101558T} with a reproduction of the experiments. In particular, they use an optimal transport cost to derive a new family of auto-encoders - the Wasserstein auto-encoders.
 
 \section{Paper Summary}
 \subsection{Motivation}
@@ -64,12 +77,7 @@ First we list the main contributions of this paper as below:
 \begin{enumerate}
   \item The first and the main contribution is the family of Wasserstein
         Auto-Encoders (WAE) defined as above. The loss function of WAE algorithm
-        is a combination of two following important terms:
-
-$$\text{Loss= reconstruction cost+ a regularizer penalizing a discrepancy between distributions}$$
-The cost function is the squared cost and the regularizer is denoted as
-$D_{Z}(P_Z, Q_Z)$ , where $Q_Z$ is the distribution of encoded data points
-defined by $Q_Z:= \mathbb{E}_{P_X} \left[Q(Z|X) \right]$.
+        is a combination of two terms: a reconstruction cost (e.g. the mean square error between the ground truth and the generated data) plus a regularizer that penalized according to the discrepancy measured by $D_{Z}(P_Z, Q_Z)$ between a prior $P_Z$ on $Z$ and a learned encoder $Q_Z$.
 
   \item We use two MNIST and CelebA datasets to evaluate the WAE algorithm and we
         will observe that the generated samples are less blurry than VAE's generated
@@ -103,7 +111,7 @@ that how WAE is more efficient than VAE.
 
 \begin{figure}[h!]
 \centering
-\includegraphics[width=0.9\textwidth]{diagram}
+\includegraphics[width=0.7\textwidth]{im1.jpg}
 
 \caption{In these figures circles true data points $X$ for data space
 $\mathcal{X}$, triangles are the latent points $Z$ from space $\mathcal{Z}$,
@@ -123,9 +131,9 @@ with a hight probability while in the right picture data points $X$ are mapped t
 $Y$ a lower probability. }
 
 \label{Figure 1}
-\end{figure}\\
+\end{figure}
 
- \textbf{What is Wasserstein distance?}
+\textbf{What is Wasserstein distance?}
 Wasserstein Distance is a measure of the distance between two probability
 distributions.( It is also called Earth Mover's distance, short for EM distance,
 because informally it can be interpreted as moving piles of dirt that follow one
@@ -171,10 +179,52 @@ and
 
 $$W(P,Q)=0=|\theta|$$
 
-$D_{KL}$ gives us inifity when two distributions are disjoint. The value of
+$D_{KL}$ gives us infinity when two distributions are disjoint. The value of
 $D_{JS}$ has sudden jump, not differentiable at $\theta=0$. Only Wasserstein
 metric provides a smooth measure, which is super helpful for a stable learning
 process using gradient descents.
+
+\section{Application to Generative Models}
+
+\subsection{Tractable method for computing the Wasserstein distance $W_c(P_X, P_G)$}
+
+The goal of generative models is to approximate the distribution of the data $P_X$ with a latent variable models $P_G$. The distribution is defined as $p_G(x) = \int p_G(x|z)p_Z(z)dz$ where $p_Z(z)$ is a fixed distribution (e.g. standard normal) and $p_G(x|z)$ is learned by comparing sample from the model $\tilde{x}\sim P_G$ and observed data $x$. To define $P_G$, a distribution $P_Z$ is choose as a prior over the latent variable $Z$. Then $Z$ is sampled from $P_Z$ and $\tilde{x}$ is obtain from the mapping $P_G: Z \rightarrow X$. The goal of the learning algorithm is to learn the mapping $P_G$ such that equation $\eqref{eq:ot}$ is minimized. The Wasserstein distance is intractable, so instead the algorithm also learn a conditional distribution $Q(Z|X)$ such that its expected value over $X$ is equal to the prior $P_Z$, i.e.
+\[
+ p_G(x) = \int p_G(x|z)p_Z(z)dz = \E_{X\sim P_X}\int p_G(x|z)q(z|x)dx
+\]
+The reason why defining $P_G$ like this is useful is because theorem 1 in \cite{2017arXiv171101558T} state that minimizing \eqref{eq:ot} is equivalent to minimizing
+\begin{equation}
+ W_c(P_X, P_G)=\inf_{Q:Q_Z=P_Z}\E_{P_X}\E_{Q(Z|X)}[c(X, G(Z))]
+ \label{eq:ot2}
+\end{equation}
+
+\subsection{Regularizer}
+Minimizing the cost $c$ between the data $X$ and sample $G(Z)$ should force the model to learn a good mapping but $Q_Z$ still need to be equal to $P_Z$ for equality \eqref{eq:ot2} to hold. For this reason, the loss function of WAE algorithm is a combination of a reconstruction cost (e.g. the mean square error between the ground truth and the generated data) plus a regularizer that penalized according to the discrepancy measured by $D_{Z}(P_Z, Q_Z)$ between a prior $P_Z$ on $Z$ and a learned encoder $Q_Z$. Adding this regularizer should ensure that $Q_Z$ is close to $P_Z$. The main difference between VAE and WAE is this discrepancy measure. In a traditional VAE setting, the model is train to minimize a the sum of a reconstruction cost with the KL-divergence between the prior and the encoder acting as a regularizer. \\
+
+In the case of WAE-GAN, the regularizer takes the form of a GAN-like discriminator function i.e. the regularizer can be express as $R_{WAEGAN}(\lambda, \gamma) = \lambda\log D_{\gamma}(\tilde{z})$ where $D_{\lambda}$ is the discriminator parametrized by $\gamma$. The parameters of the discriminator are updated to maximized the default GAN objective function
+\begin{equation}
+ \E_{z\sim P_Z}\log D_{\gamma}(z)+\E_{x\sim Q_{z|x}}\log(1-D_{\gamma}(\tilde{z}))
+ \label{GAN}
+\end{equation}
+The regularizer is maximized when both $D_{\gamma}(z)$ and $1-D_{\gamma}(\tilde{z})$ have expected value of 0.5, i.e. when the discriminator can't distinguish sample's from the decoder from the one from the prior. \\
+
+In the case of WAE-MMD, given a positive definite reproducing kernel $k(\cdot,\cdot)$ the penalty applied to $Q_Z$ for being different from $P_Z$ is defined as the norm of the difference between the expected value of $k(z,\cdot)$ over $P_Z$ and the difference between the expected value of $k(z,\cdot)$ over $Q_Z$. Formal,
+\begin{equation}
+ MMD_k(P_Z, Q_Z) = ||\int_{\mathcal{Z}}k(z,\cdot)p_Z(z)dz-\int_{\mathcal{Z}}k(z,\cdot)q_Z(z)dz||_{\mathcal{H}_k}
+ \label{MMD}
+\end{equation}
+where $\mathcal{H}_k$ is the RKHS of real-valued functions mapping $\mathcal{Z}$ to $\mathbb{R}$. Minimizing $\eqref{MMD}$ ensure is equivalent to minimizing the point wise distance between the two expectation and thus it ensure that both distribution are close to each other. For computation purposes, an unbiased estimator of the MMD is used, i.e.
+\begin{equation}
+ R_{WAE-MMD}(\lambda, k) =
+ \frac{\lambda}{n(n-1)}\sum_{l\neq j}k(z_l,z_j) +
+\frac{\lambda}{n(n-1)}\sum_{l\neq j}k(\tilde{z}_l,\tilde{z}_j) -
+\frac{2\lambda}{n^2}\sum_{l, j}k(z_l,\tilde{z}_j)
+ \end{equation}
+
+\subsection{Learning algorithm}
+Let $\mathrm{D}_X$ be the training set. Let $\phi$ and $\theta$ be the parameters of the decoder and the encoder respectively. The goal is to learn $\phi$ and $\theta$ that minimize the objective function (i.e. cost + regularizer). The following steps are repeated until convergence of $\phi$ and $\theta$: (1) sample $\{x_1,...,x_n\}\in\mathrm{D}_X$; (2) sample $z_1,...,z_n\sim P_z$; (3) sample $\tilde{z}_i\sim Q(Z|x_i)$, $i=1,...,n$; (4) compute the gradient of the objective and update the parameters in the descending direction.\\
+
+For the $WAE-GAN$, we also need to compute the gradient of the discriminator $D_{\gamma}$ and update $\gamma$ in the ascending direction (since we want to maximize \eqref{GAN}) before updating the objective.
 
 \section{Experiments}
 
@@ -194,7 +244,9 @@ inception distance scores to quantify the claims made by this paper.
 
 The reproduction of this paper can be found in the following repo:\\
 
-\begin{center}\textbf{https://github.com/josephdviviano/wae}\end{center}\\
+\begin{center}
+\textbf{https://github.com/josephdviviano/wae}
+\end{center}
 
 These experiments were run on both the celeba and mnist datasets. Note that,
 due to time restrictions, we only trained our models on 10\% of the celeba
@@ -346,7 +398,9 @@ replication. \\
 We found multiple details of the implementation in the official source code
 not reported in the paper. All references below refer to the official code: \\
 
-\begin{center}\textbf{https://github.com/tolstikhin/wae}\end{center}\\
+\begin{center}
+\textbf{https://github.com/tolstikhin/wae}
+\end{center}
 
 \begin{itemize}
 
@@ -377,6 +431,8 @@ not reported in the paper. All references below refer to the official code: \\
           well to have given a theoretical intuition as to which this might be true
           as well as practical recommendations to mitigate this issue when trying
           to implement the WAE yourself.}
+
+\end{itemize}
 
 Our major concern is the large difference in performance observed between using
 \textbf{WAE-GAN}, which we found to be both stable and produce very good results,
