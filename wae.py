@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from glob import glob
 import os
 import sys
 import scandir
@@ -25,8 +26,9 @@ CHCKDIR = '/data/milatmp1/vivianoj/wae_checkpoints/'
 CUDA = torch.cuda.is_available()
 EPOCHS = 80
 
-DATASET = 'mnist' # 'mnist' / 'celeb'
+DATASET = 'celeb' # 'mnist' / 'celeb'
 LOSS = 'vae'  # 'vae', 'wae-gan', 'wae-mmd'
+MODE = 'analyze' # analyze or train
 
 # data and loss-specific options
 if DATASET == 'celeb':
@@ -250,7 +252,7 @@ if CUDA:
     dis = dis.cuda()
 
 if DATASET == 'celeb':
-    inc = InceptionV3([0])
+    inc = InceptionV3([3])
 
     if CUDA:
         inc = inc.cuda()
@@ -393,6 +395,31 @@ def wae_mmd_loss(x, y):
     mmd = torch.clamp(mmd, -5, 5)
 
     return(mmd)
+
+
+def traverse_latent(images1, images2):
+    """
+    Accepts two equally-sized minibatches, outputs latent-space traversal img.
+    """
+
+    z1 = vae.encode(images1)
+    z2 = vae.encode(images2)
+
+    alphas = [0, 0.1, 0.2, 0.3, 0.4, 0.5 , 0.6, 0.7, 0.8, 0.9, 1.0] # num_images goes here
+    results = None
+
+    for alpha in alphas:
+        z = alpha*z1 + (1-alpha)*z2
+
+        recon_x = vae.decode(z)
+
+        if type(results) == type(None):
+            results = recon_x.data
+        else:
+            results = torch.cat((results, recon_x.data), dim=0)
+
+    save_image(results, 'img/{}_{}_interpolation.jpg'.format(DATASET, LOSS),
+        nrow=10, padding=2)
 
 
 def calc_loss(X, recon, mu, logvar, method='vae', verbose=False):
@@ -543,6 +570,24 @@ def test(ep, data):
     return(test_loss, blur.data[0], fid)
 
 
+def analyze():
+
+    checkpoints = glob(os.path.join(CHCKDIR, '{}_{}_*'.format(DATASET, LOSS)))
+    checkpoints.sort()
+    checkpoint = checkpoints[-1]
+
+    inc = InceptionV3([3])
+    inc = inc.cuda()
+
+    vae = VAE(nc=N_CHAN, ngf=128, ndf=128, latent_variable_size=N_Z)
+    vae.load_state_dict(torch.load(checkpoint))
+    vae.cuda()
+
+    n_samples = 1
+    traverse_latent(Variable(im_test.dataset[:n_samples, :, :, :]).cuda(),
+        Variable(im_test.dataset[n_samples:n_samples*2, :, :, :]).cuda())
+
+
 def main():
 
     f = open('{}_{}_stats.csv'.format(DATASET, LOSS), 'w')
@@ -573,5 +618,8 @@ def main():
     f.close()
 
 if __name__ == '__main__':
-    main()
+    if MODE == 'train':
+        main()
+    elif MODE == 'analyze':
+        analyze()
 
